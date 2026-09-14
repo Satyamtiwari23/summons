@@ -31,6 +31,13 @@ const SummonContext = createContext<SummonContextType | undefined>(undefined);
 
 export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
+
+  const getAuthToken = async () => {
+    if (!currentUser) return '';
+    if (currentUser.uid.startsWith('usr_')) return currentUser.uid;
+    return typeof (currentUser as any).getIdToken === 'function' ? await (currentUser as any).getIdToken() : currentUser.uid;
+  };
+
   const [summons, setSummons] = useState<Summon[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -42,76 +49,62 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const getStorageKey = (uid: string) => `users_${uid}_summons`;
   const getWitnessStorageKey = (uid: string) => `users_${uid}_witnesses`;
 
-  // Helper: Persist summons locally
-  const saveLocalSummons = useCallback(
-    (uid: string, items: Summon[]) => {
-      try {
-        localStorage.setItem(getStorageKey(uid), JSON.stringify(items));
-      } catch (err) {
-        console.warn('Local storage quota warning:', err);
-      }
-    },
-    []
-  );
-
-  // Helper: Load local summons backup
-  const loadLocalSummons = useCallback((uid: string): Summon[] => {
+  // Fetch summons from MongoDB API
+  const fetchSummons = useCallback(async (uid: string) => {
+    const token = await getAuthToken();
     try {
-      const data = localStorage.getItem(getStorageKey(uid));
-      return data ? (JSON.parse(data) as Summon[]) : [];
-    } catch {
-      return [];
+      const res = await fetch('/api/summons', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSummons(data);
+        checkUpcomingReminders(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch summons:', err);
+    } finally {
+      setIsLoading(false);
     }
   }, []);
 
-  // Helper: Persist witnesses locally
-  const saveLocalWitnesses = useCallback(
-    (uid: string, items: WitnessPerson[]) => {
-      try {
-        localStorage.setItem(getWitnessStorageKey(uid), JSON.stringify(items));
-      } catch (err) {
-        console.warn('Local storage quota warning:', err);
-      }
-    },
-    []
-  );
-
-  // Helper: Load local witnesses backup
-  const loadLocalWitnesses = useCallback((uid: string): WitnessPerson[] => {
+  // Fetch witnesses from MongoDB API
+  const fetchWitnesses = useCallback(async (uid: string) => {
+    const token = await getAuthToken();
     try {
-      const data = localStorage.getItem(getWitnessStorageKey(uid));
-      return data ? (JSON.parse(data) as WitnessPerson[]) : [];
-    } catch {
-      return [];
+      const res = await fetch('/api/witnesses', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setWitnesses(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch witnesses:', err);
+    } finally {
+      setIsLoadingWitnesses(false);
     }
   }, []);
 
-  // 1. Instant loading of summons from local storage
+  // 1. Initial loading of summons from MongoDB
   useEffect(() => {
     if (!currentUser) {
       setSummons([]);
       setIsLoading(false);
       return;
     }
+    fetchSummons(currentUser.uid);
+  }, [currentUser, fetchSummons]);
 
-    const localData = loadLocalSummons(currentUser.uid);
-    setSummons(localData);
-    checkUpcomingReminders(localData);
-    setIsLoading(false);
-  }, [currentUser, loadLocalSummons]);
-
-  // 1b. Instant loading of witnesses from local storage
+  // 1b. Initial loading of witnesses from MongoDB
   useEffect(() => {
     if (!currentUser) {
       setWitnesses([]);
       setIsLoadingWitnesses(false);
       return;
     }
-
-    const localData = loadLocalWitnesses(currentUser.uid);
-    setWitnesses(localData);
-    setIsLoadingWitnesses(false);
-  }, [currentUser, loadLocalWitnesses]);
+    fetchWitnesses(currentUser.uid);
+  }, [currentUser, fetchWitnesses]);
 
   // 2. Instant document attachment converter (fast base64/dataURL, no cloud upload latency)
   const uploadAttachment = async (
@@ -170,9 +163,18 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Save immediately and synchronously
     setSummons((prev) => {
       const updated = [newSummon, ...prev.filter((s) => s.id !== summonId)];
-      saveLocalSummons(currentUser.uid, updated);
       return updated;
     });
+
+    // Save to DB
+    fetch('/api/summons', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(newSummon)
+    }).catch(err => console.error("Failed to save summon to DB:", err));
 
     return newSummon;
   };
@@ -186,20 +188,37 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     setSummons((prev) => {
       const updated = prev.map((s) => (s.id === id ? { ...s, ...updatedRecord } : s));
-      saveLocalSummons(currentUser.uid, updated);
       return updated;
     });
+
+    // Save to DB
+    fetch(`/api/summons/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(updatedRecord)
+    }).catch(err => console.error("Failed to update summon in DB:", err));
   };
 
   // 5. Quick Instant Delete Summon
   const deleteSummon = async (id: string) => {
+    const token = await getAuthToken();
     if (!currentUser) return;
 
     setSummons((prev) => {
       const updated = prev.filter((s) => s.id !== id);
-      saveLocalSummons(currentUser.uid, updated);
       return updated;
     });
+
+    // Delete from DB
+    fetch(`/api/summons/${id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }).catch(err => console.error("Failed to delete summon from DB:", err));
   };
 
   // 6. Mark as Served & Closed
@@ -247,9 +266,18 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     setWitnesses((prev) => {
       const updated = [newWitness, ...prev.filter((w) => w.id !== witnessId)];
-      saveLocalWitnesses(currentUser.uid, updated);
       return updated;
     });
+
+    // Save to DB
+    fetch('/api/witnesses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(newWitness)
+    }).catch(err => console.error("Failed to save witness to DB:", err));
 
     return newWitness;
   };
@@ -262,19 +290,36 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     setWitnesses((prev) => {
       const updated = prev.map((w) => (w.id === id ? { ...w, ...updatedRecord } : w));
-      saveLocalWitnesses(currentUser.uid, updated);
       return updated;
     });
+
+    // Save to DB
+    fetch(`/api/witnesses/${id}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify(updatedRecord)
+    }).catch(err => console.error("Failed to update witness in DB:", err));
   };
 
   const deleteWitness = async (id: string) => {
+    const token = await getAuthToken();
     if (!currentUser) return;
 
     setWitnesses((prev) => {
       const updated = prev.filter((w) => w.id !== id);
-      saveLocalWitnesses(currentUser.uid, updated);
       return updated;
     });
+
+    // Delete from DB
+    fetch(`/api/witnesses/${id}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    }).catch(err => console.error("Failed to delete witness from DB:", err));
   };
 
   const getWitnessById = (id: string) => witnesses.find((w) => w.id === id);

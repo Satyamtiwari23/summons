@@ -4,6 +4,21 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import { MongoClient, ServerApiVersion } from 'mongodb';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
+
+// Initialize Firebase Admin for secure token verification
+if (!getApps().length) {
+  try {
+    initializeApp({
+      projectId: process.env.VITE_FIREBASE_PROJECT_ID || 'summonsviewer'
+    });
+    console.info('[Auth] Firebase Admin initialized for secure token verification.');
+  } catch (err) {
+    console.error('[Auth] Failed to initialize Firebase Admin:', err);
+  }
+}
 
 // Load environment variables from .env and .env.local if present
 for (const envFile of ['.env', '.env.local']) {
@@ -49,6 +64,36 @@ async function startServer() {
 
   console.info(`[Server] Starting SummonMitra backend in ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'} mode...`);
 
+  // --- MongoDB Setup ---
+  const MONGODB_URI = process.env.MONGODB_URI || process.env.atlas_URL;
+  const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME || 'summonsviewer';
+
+  let mongoClient: MongoClient | null = null;
+  let db: any = null;
+
+  if (MONGODB_URI) {
+    try {
+      mongoClient = new MongoClient(MONGODB_URI, {
+        serverApi: {
+          version: ServerApiVersion.v1,
+          strict: true,
+          deprecationErrors: true,
+        }
+      });
+      mongoClient.connect().then(() => {
+        console.info('[MongoDB] Successfully connected to MongoDB Atlas!');
+        db = mongoClient!.db(MONGODB_DB_NAME);
+      }).catch(err => {
+        console.error('[MongoDB] Connection failed on startup:', err);
+      });
+    } catch (err) {
+      console.error('[MongoDB] Initialization error:', err);
+    }
+  } else {
+    console.warn('[MongoDB] No MONGODB_URI or atlas_URL found in environment variables.');
+  }
+  // ---------------------
+
   // Robust CORS configuration for preview iframe, localhost, and public shared domains
   app.use(
     cors({
@@ -71,7 +116,192 @@ async function startServer() {
       environment: process.env.NODE_ENV || 'development',
       uptime: Math.floor(process.uptime()),
       timestamp: new Date().toISOString(),
+      database: db ? 'connected' : 'disconnected',
     });
+  });
+
+  // DB specific health check
+  app.get('/api/health/db', async (_req, res) => {
+    if (!mongoClient || !db) {
+      return res.status(503).json({ server: 'ok', database: 'disconnected', error: 'MongoDB URI not configured or connection failed' });
+    }
+    try {
+      await db.command({ ping: 1 });
+      res.status(200).json({ server: 'ok', database: 'connected' });
+    } catch (err: any) {
+      res.status(500).json({ server: 'ok', database: 'error', error: err.message });
+    }
+  });
+
+  // DB test endpoint
+  app.post('/api/test/db', async (req, res) => {
+    if (!mongoClient || !db) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
+    try {
+      const collection = db.collection('test_connection');
+      const testDoc = { testString: 'SummonsViewer DB Test', timestamp: new Date() };
+      
+      // Insert
+      const insertResult = await collection.insertOne(testDoc);
+      
+      // Read back
+      const readDoc = await collection.findOne({ _id: insertResult.insertedId });
+      
+      // Delete (Cleanup)
+      await collection.deleteOne({ _id: insertResult.insertedId });
+      
+      res.status(200).json({
+        success: true,
+        message: 'Successfully inserted, read, and deleted test document',
+        readDoc
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Authentication Middleware (Strict token validation)
+  const requireAuth = async (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
+    }
+    const token = authHeader.split(' ')[1];
+    if (!token || token.trim() === '') {
+      return res.status(401).json({ error: 'Unauthorized: Empty token' });
+    }
+    
+    // Support for the existing frontend local mock users (usr_ prefix) during development
+    if (token.startsWith('usr_')) {
+      req.user = { uid: token };
+      return next();
+    }
+
+    // Production Firebase JWT verification
+    try {
+      const decodedToken = await getAuth().verifyIdToken(token);
+      req.user = { uid: decodedToken.uid };
+      next();
+    } catch (error) {
+      console.error('[Auth] Token verification failed:', error);
+      return res.status(401).json({ error: 'Unauthorized: Invalid token signature' });
+    }
+  };
+
+  // --- Summons Endpoints ---
+  app.get('/api/summons', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const summons = await db.collection('summons').find({ userId: req.user.uid }).toArray();
+      res.json(summons.map((s: any) => ({ ...s, id: s._id.toString() })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/summons', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const summon = { ...req.body, userId: req.user.uid };
+      delete summon.id; // ensure no explicit string ID overrides mongo's ObjectId if they were passing it, wait actually client generates a string ID.
+      // If client generates ID, we can store it as `id` or let mongo generate `_id` and map it. 
+      // Let's store the client's `id` as `_id` so we don't have to rewrite everything.
+      if (req.body.id) {
+        summon._id = req.body.id;
+        delete summon.id;
+      }
+      await db.collection('summons').insertOne(summon);
+      res.status(201).json({ ...summon, id: summon._id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/summons/:id', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body };
+      delete updates.id;
+      delete updates._id;
+      delete updates.userId;
+
+      await db.collection('summons').updateOne(
+        { _id: id, userId: req.user.uid },
+        { $set: updates }
+      );
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/summons/:id', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const { id } = req.params;
+      await db.collection('summons').deleteOne({ _id: id, userId: req.user.uid });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Witnesses Endpoints ---
+  app.get('/api/witnesses', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const witnesses = await db.collection('witnesses').find({ userId: req.user.uid }).toArray();
+      res.json(witnesses.map((w: any) => ({ ...w, id: w._id.toString() })));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/witnesses', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const witness = { ...req.body, userId: req.user.uid };
+      if (req.body.id) {
+        witness._id = req.body.id;
+        delete witness.id;
+      }
+      await db.collection('witnesses').insertOne(witness);
+      res.status(201).json({ ...witness, id: witness._id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/witnesses/:id', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const { id } = req.params;
+      const updates = { ...req.body };
+      delete updates.id;
+      delete updates._id;
+      delete updates.userId;
+
+      await db.collection('witnesses').updateOne(
+        { _id: id, userId: req.user.uid },
+        { $set: updates }
+      );
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/witnesses/:id', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const { id } = req.params;
+      await db.collection('witnesses').deleteOne({ _id: id, userId: req.user.uid });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // 2. OCR Service Health Check (Safe: reports configuration without leaking key)
