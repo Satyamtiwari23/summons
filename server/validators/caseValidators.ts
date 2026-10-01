@@ -35,7 +35,7 @@ export function validateQrLookupRequest(body: any): ValidatedQrRequest {
     };
   }
 
-  const rawPayload = body.payload;
+  const rawPayload = body.payload !== undefined ? body.payload : body.qrPayload;
   const source = typeof body.source === 'string' ? body.source.trim() : 'judicial-qr';
 
   if (typeof rawPayload !== 'string' || !rawPayload.trim()) {

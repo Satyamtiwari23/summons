@@ -58,7 +58,7 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
   onClose,
   defaultHearingDate,
 }) => {
-  const { addSummon } = useSummons();
+  const { addSummon, summons } = useSummons();
   const { currentUser } = useAuth();
   const { showToast } = useToast();
   const shouldReduceMotion = useReducedMotion();
@@ -69,6 +69,7 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
   );
   const [currentScanSessionId, setCurrentScanSessionId] = useState<string>(() => currentScanSessionIdRef.current);
   const [isUnreadable, setIsUnreadable] = useState<boolean>(false);
+  const [confirmDuplicate, setConfirmDuplicate] = useState<boolean>(false);
 
   // Hidden file input reference for unreadable quick recovery
   const recoveryFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -773,7 +774,9 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
 
     const reader = new FileReader();
     reader.onload = () => {
-      setCropImageSrc(reader.result as string);
+      const dataUrl = reader.result as string;
+      setCropImageSrc(dataUrl);
+      setOriginalAttachmentPreview(dataUrl);
     };
     reader.readAsDataURL(file);
     e.target.value = '';
@@ -800,6 +803,9 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
   };
 
   const handleCropComplete = (croppedBlob: Blob) => {
+    if (cropImageSrc && !originalAttachmentPreview) {
+      setOriginalAttachmentPreview(cropImageSrc);
+    }
     setCropImageSrc(null);
     const file = new File([croppedBlob], cropFileName, { type: cropMimeType });
     setRawFile(file);
@@ -1204,6 +1210,21 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
     if (!hearingDate) {
       setFormError('Court Hearing Date is required');
       return;
+    }
+
+    // Duplicate check for CNR / Summon Number
+    if (!confirmDuplicate && summons && summons.length > 0) {
+      const match = summons.find(
+        (s) => s.summonNumber && s.summonNumber.trim().toUpperCase() === summonNumber.trim().toUpperCase()
+      );
+      if (match) {
+        setFormError(
+          `A record with Summon/CNR Number "${summonNumber.trim()}" already exists in your docket (${match.personName || 'Registered'}). Click "Save Record" again if you wish to confirm adding this docket.`
+        );
+        setConfirmDuplicate(true);
+        setIsSubmitting(false);
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -2421,8 +2442,35 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
             setIsQrModalOpen(false);
             handleDecodedQr(payload, sessionId);
           }}
-          onManualEntryFallback={() => {
+          onManualEntryFallback={(cnr) => {
             setIsQrModalOpen(false);
+            if (cnr) {
+              const cleanCnr = cnr.trim().toUpperCase();
+              setSummonNumber(cleanCnr);
+              if (!caseNumber) {
+                setCaseNumber(cleanCnr);
+              }
+              const detected = new Set(detectedFields);
+              detected.add('summonNumber');
+              setDetectedFields(detected);
+              setFieldMeta((prev) => ({
+                ...prev,
+                summonNumber: {
+                  field: 'summonNumber',
+                  value: cleanCnr,
+                  confidence: 1.0,
+                  source: 'user',
+                  isVerified: true,
+                  isModified: false,
+                },
+              }));
+              showToast(
+                'Enter your verified case details below. Your scanned CNR number has been added.',
+                'info',
+                'CNR Added'
+              );
+            }
+            setIsUnreadable(false);
             setCurrentStep('review');
           }}
         />

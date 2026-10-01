@@ -20,12 +20,15 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Loader2,
+  Download,
+  Maximize2,
 } from 'lucide-react';
 import { Summon } from '../types';
 import { useSummons } from '../context/SummonContext';
 import { useToast } from './Toast';
 import { generateFormattedForwardText, shareSummonNative } from '../utils/shareService';
 import { downloadSummonNoticePDF } from '../utils/pdfService';
+import { downloadSummonImage } from '../utils/documentDownloadService';
 import { ImageCropperModal } from './ImageCropperModal';
 
 interface SummonDetailModalProps {
@@ -48,6 +51,7 @@ export const SummonDetailModal: React.FC<SummonDetailModalProps> = ({
   const [isDeleting, setIsDeleting] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState<boolean>(false);
+  const [isDownloadingImage, setIsDownloadingImage] = useState<boolean>(false);
 
   // Edit states
   const [editPersonName, setEditPersonName] = useState('');
@@ -256,6 +260,28 @@ export const SummonDetailModal: React.FC<SummonDetailModalProps> = ({
     }
   };
 
+  const handleDownloadImage = async (forceOriginal: boolean = true) => {
+    if (!summon) return;
+    setIsDownloadingImage(true);
+    try {
+      const result = await downloadSummonImage(summon, {
+        preferOriginal: true,
+        forceOriginal,
+        isViewingOriginal: viewingOriginalPhoto,
+      });
+      showToast(
+        `${result.isOriginal ? 'Original summons photo' : 'Scanned document'} downloaded: ${result.fileName}`,
+        'success',
+        'Download Complete'
+      );
+    } catch (err: any) {
+      console.error('Failed to download summon image:', err);
+      showToast(err.message || 'Failed to download original summons photo', 'error', 'Download Error');
+    } finally {
+      setIsDownloadingImage(false);
+    }
+  };
+
   const handleForwardNative = async () => {
     const shared = await shareSummonNative(summon);
     if (shared) {
@@ -451,49 +477,93 @@ export const SummonDetailModal: React.FC<SummonDetailModalProps> = ({
               </div>
             ) : (
               summon.imageUrl || summon.originalImageUrl ? (
-                <div className="border border-border rounded-xl overflow-hidden bg-black/40 p-3 flex flex-col items-center">
-                  {summon.originalImageUrl && summon.imageUrl && (
-                    <div className="flex items-center gap-1.5 bg-muted p-1 rounded-xl border border-border mb-3 self-center">
-                      <button
-                        type="button"
-                        onClick={() => setViewingOriginalPhoto(false)}
-                        className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                          !viewingOriginalPhoto
-                            ? 'bg-card text-foreground shadow-sm font-bold border border-border'
-                            : 'text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        Cropped (OCR)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setViewingOriginalPhoto(true)}
-                        className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-                          viewingOriginalPhoto
-                            ? 'bg-card text-foreground shadow-sm font-bold border border-border'
-                            : 'text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        Original Photo
-                      </button>
-                    </div>
-                  )}
-
-                  <img
-                    src={viewingOriginalPhoto && summon.originalImageUrl ? summon.originalImageUrl : (summon.imageUrl || summon.originalImageUrl)}
-                    alt="Summon document copy"
-                    className="max-h-72 object-contain rounded-lg border border-border-strong mb-2 cursor-pointer shadow-sm hover:opacity-95 transition-opacity"
-                    onClick={() => setIsFullImageOpen(true)}
-                  />
-                  <div className="flex items-center gap-3">
-                    <button type="button" onClick={() => setIsFullImageOpen(true)} className="text-[11px] text-primary-text hover:underline cursor-pointer">
-                      View Full Image
-                    </button>
-                    {summon.originalImageUrl && (
-                      <span className="text-[10px] font-mono text-muted-foreground">
-                        {viewingOriginalPhoto ? '• Preserved Original' : '• Scanned Document'}
-                      </span>
+                <div className="border border-border rounded-xl overflow-hidden bg-black/40 p-3.5 flex flex-col items-center">
+                  {/* Image Header & Action Toolbar */}
+                  <div className="w-full flex items-center justify-between gap-2 flex-wrap mb-3 pb-2 border-b border-border/60">
+                    {summon.originalImageUrl && summon.imageUrl ? (
+                      <div className="flex items-center gap-1 bg-muted p-1 rounded-xl border border-border">
+                        <button
+                          type="button"
+                          onClick={() => setViewingOriginalPhoto(false)}
+                          className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                            !viewingOriginalPhoto
+                              ? 'bg-card text-foreground shadow-sm font-bold border border-border'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          Cropped (OCR)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setViewingOriginalPhoto(true)}
+                          className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                            viewingOriginalPhoto
+                              ? 'bg-card text-foreground shadow-sm font-bold border border-border'
+                              : 'text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          Original Photo
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-semibold">
+                        <ImageIcon className="w-4 h-4 text-primary-text" />
+                        <span>{summon.originalImageUrl ? 'Original Uploaded Photo' : 'Document Scan'}</span>
+                      </div>
                     )}
+
+                    {/* Download Button on Toolbar */}
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadImage(true)}
+                      disabled={isDownloadingImage}
+                      aria-label="Download original summon document photo"
+                      title="Download original uncompressed photo"
+                      className="px-3.5 py-1.5 rounded-xl bg-primary-btn hover:bg-primary-hover active:scale-95 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer disabled:opacity-50"
+                    >
+                      {isDownloadingImage ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      <span>Download Original</span>
+                    </button>
+                  </div>
+
+                  {/* Document Image */}
+                  <div className="relative group w-full flex justify-center py-1">
+                    <img
+                      src={viewingOriginalPhoto && summon.originalImageUrl ? summon.originalImageUrl : (summon.imageUrl || summon.originalImageUrl)}
+                      alt="Summon document copy"
+                      className="max-h-72 w-auto object-contain rounded-lg border border-border-strong cursor-pointer shadow-sm hover:opacity-95 transition-opacity"
+                      onClick={() => setIsFullImageOpen(true)}
+                    />
+                  </div>
+
+                  {/* Sub-bar with View Full Image & Download Details */}
+                  <div className="w-full flex items-center justify-between pt-2.5 mt-2 border-t border-border/40 text-xs text-muted-foreground flex-wrap gap-2">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsFullImageOpen(true)}
+                        className="text-[11px] font-semibold text-primary-text hover:underline flex items-center gap-1 cursor-pointer"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" /> View Full Image
+                      </button>
+                      <span className="text-[10px] font-mono opacity-70">
+                        {viewingOriginalPhoto ? '• Preserved Original Quality' : '• Scanned Docket Copy'}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadImage(viewingOriginalPhoto)}
+                      disabled={isDownloadingImage}
+                      className="text-[11px] text-muted-foreground hover:text-foreground hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      <Download className="w-3 h-3 text-primary-text" />
+                      <span>{viewingOriginalPhoto ? 'Save High-Res Original' : 'Save Scanned Copy'}</span>
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -515,16 +585,82 @@ export const SummonDetailModal: React.FC<SummonDetailModalProps> = ({
       )}
           {/* Full Image Modal */}
           {isFullImageOpen && (summon?.imageUrl || summon?.originalImageUrl) && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-8 bg-black/90 backdrop-blur-sm" onClick={() => setIsFullImageOpen(false)}>
-              <div className="relative max-w-5xl w-full h-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                <button type="button" aria-label="Close full image view" onClick={() => setIsFullImageOpen(false)} className="absolute top-4 right-4 p-2 bg-black/50 hover:bg-black text-white rounded-full transition-colors z-10 cursor-pointer">
-                  <X className="w-6 h-6" />
-                </button>
-                <img
-                  src={viewingOriginalPhoto && summon.originalImageUrl ? summon.originalImageUrl : (summon.imageUrl || summon.originalImageUrl)}
-                  alt="Full Summons Photo"
-                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
-                />
+            <div
+              className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-6 bg-black/90 backdrop-blur-md animate-fadeIn"
+              onClick={() => setIsFullImageOpen(false)}
+            >
+              <div
+                className="relative max-w-5xl w-full h-full flex flex-col items-center justify-between"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Full Image Top Toolbar */}
+                <div className="w-full flex items-center justify-between gap-3 p-3 bg-black/75 backdrop-blur-md rounded-2xl border border-white/10 mb-2 z-10">
+                  <div className="flex items-center gap-2">
+                    <span className="text-white text-xs font-mono font-bold tracking-wider">
+                      {summon.summonNumber}
+                    </span>
+                    {summon.originalImageUrl && summon.imageUrl && (
+                      <div className="flex items-center gap-1 bg-white/10 p-0.5 rounded-lg ml-2">
+                        <button
+                          type="button"
+                          onClick={() => setViewingOriginalPhoto(false)}
+                          className={`px-2.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                            !viewingOriginalPhoto
+                              ? 'bg-white text-black font-bold shadow'
+                              : 'text-white/70 hover:text-white'
+                          }`}
+                        >
+                          Cropped (OCR)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setViewingOriginalPhoto(true)}
+                          className={`px-2.5 py-1 rounded text-xs font-semibold transition-all cursor-pointer ${
+                            viewingOriginalPhoto
+                              ? 'bg-white text-black font-bold shadow'
+                              : 'text-white/70 hover:text-white'
+                          }`}
+                        >
+                          Original Photo
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadImage(true)}
+                      disabled={isDownloadingImage}
+                      aria-label="Download original document photo"
+                      className="px-3.5 py-1.5 rounded-xl bg-primary-btn hover:bg-primary-hover active:scale-95 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-50"
+                    >
+                      {isDownloadingImage ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      <span>Download Original</span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Close full image view"
+                      onClick={() => setIsFullImageOpen(false)}
+                      className="p-2 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors cursor-pointer"
+                    >
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Main Full Image */}
+                <div className="flex-1 w-full flex items-center justify-center overflow-hidden p-2">
+                  <img
+                    src={viewingOriginalPhoto && summon.originalImageUrl ? summon.originalImageUrl : (summon.imageUrl || summon.originalImageUrl)}
+                    alt="Full Summons Photo"
+                    className="max-w-full max-h-[82vh] object-contain rounded-xl shadow-2xl border border-white/10"
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -812,6 +948,23 @@ export const SummonDetailModal: React.FC<SummonDetailModalProps> = ({
               {copied ? <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-4 h-4" />}
               {copied ? 'Copied' : 'Copy Notice Text'}
             </button>
+
+            {(summon.imageUrl || summon.originalImageUrl) && (
+              <button
+                type="button"
+                onClick={() => handleDownloadImage(true)}
+                disabled={isDownloadingImage}
+                aria-label="Download original summons document photo"
+                className="px-3.5 py-2 rounded-xl bg-card hover:bg-muted text-foreground text-xs font-bold flex items-center gap-1.5 border border-border transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+              >
+                {isDownloadingImage ? (
+                  <Loader2 className="w-4 h-4 animate-spin text-primary-text" />
+                ) : (
+                  <Download className="w-4 h-4 text-primary-text" />
+                )}
+                <span>Download Photo</span>
+              </button>
+            )}
 
             <button
               type="button"

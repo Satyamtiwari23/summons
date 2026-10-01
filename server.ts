@@ -95,29 +95,33 @@ if (!process.env.JWT_SECRET) {
 
 // Helper to retrieve Gemini API key across environment variables
 function getGeminiApiKey(): string | undefined {
-  const key =
+  const rawKey =
     process.env.GEMINI_API_KEY ||
     process.env.API_KEY ||
     process.env.GOOGLE_API_KEY ||
     process.env.VITE_GEMINI_API_KEY;
 
-  if (!key || key.startsWith('your_') || key.includes('placeholder')) {
+  if (!rawKey) return undefined;
+  const key = rawKey.trim().replace(/^["']|["']$/g, '').trim();
+  if (!key || key.startsWith('your_') || key.includes('placeholder') || key.length < 10) {
     return undefined;
   }
   return key;
 }
 
-async function startServer() {
-  const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
-  const isProduction = process.env.NODE_ENV === 'production';
+// Shared app instance promise for serverless caching
+let appPromise: Promise<{ app: express.Express; db: any; mongoClient: MongoClient | null }> | null = null;
 
-  console.info(`[Server] Starting SummonMitra backend in ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'} mode on port ${PORT}...`);
+export async function getApp() {
+  if (appPromise) return appPromise;
 
-  // --- MongoDB Setup with In-Memory Mock Fallback ---
-  
-  let mongoClient: MongoClient | null = null;
-  let db: any = null;
+  appPromise = (async () => {
+    const app = express();
+    const isProduction = process.env.NODE_ENV === 'production';
+
+    // --- MongoDB Setup with In-Memory Mock Fallback ---
+    let mongoClient: MongoClient | null = null;
+    let db: any = null;
 
   if (process.env.MONGODB_URI) {
     try {
@@ -740,6 +744,54 @@ async function startServer() {
     }
   });
 
+  app.get('/api/summons/:id/download-original', requireAuth, async (req: any, res: any) => {
+    if (!db) return res.status(503).json({ error: 'Database disconnected' });
+    try {
+      const { id } = req.params;
+      const userFilter = {
+        $or: [
+          { userId: req.user.uid },
+          { ownerId: req.user.uid },
+          ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
+        ]
+      };
+      let summon = await db.collection('summons').findOne({ _id: id, ...userFilter });
+      if (!summon && ObjectId.isValid(id)) {
+        summon = await db.collection('summons').findOne({ _id: new ObjectId(id), ...userFilter });
+      }
+      if (!summon) {
+        return res.status(404).json({ error: 'Summon record not found or access denied' });
+      }
+
+      const imageUrl = summon.originalImageUrl || summon.imageUrl;
+      if (!imageUrl) {
+        return res.status(404).json({ error: 'No summons document image attached to this record' });
+      }
+
+      const cleanNum = (summon.summonNumber || 'Summon').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+      // If data URL: decode and send with Content-Disposition attachment header
+      if (imageUrl.startsWith('data:')) {
+        const parts = imageUrl.split(',');
+        const matchMime = parts[0].match(/:(.*?);/);
+        const mimeType = matchMime ? matchMime[1] : 'image/jpeg';
+        const buffer = Buffer.from(parts[1], 'base64');
+        const ext = mimeType.split('/')[1] === 'png' ? 'png' : mimeType.split('/')[1] === 'webp' ? 'webp' : 'jpg';
+        const fileName = `Summons_${cleanNum}_Original.${ext}`;
+
+        res.setHeader('Content-Type', mimeType);
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Length', buffer.length);
+        return res.end(buffer);
+      }
+
+      // If external or storage URL
+      return res.redirect(imageUrl);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/summons', requireAuth, async (req: any, res: any) => {
     if (!db) return res.status(503).json({ error: 'Database disconnected' });
     try {
@@ -1035,14 +1087,7 @@ async function startServer() {
         `[DOCKET] AI request started (session=${sessionId || 'n/a'}, mime=${normalizedMime}, payload=~${Math.round((cleanBase64.length * 3) / 4 / 1024)} KB)`
       );
 
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
-        },
-      });
+      const ai = new GoogleGenAI({ apiKey });
       const prompt = `You are a certified forensic judicial OCR extraction engine for Indian court summons, warrants, and legal notices.
 
 CRITICAL INTEGRITY DIRECTIVE - ZERO HALLUCINATION POLICY:
@@ -1649,19 +1694,31 @@ IMPORTANT: Return ONLY valid JSON. Absolutely zero markdown framing outside the 
     }
   });
 
-  // Schedule periodic background hearing check every 2 minutes
-  setInterval(() => {
-    checkAndDispatchHearingNotifications().catch((err) => {
-      console.error('[Scheduler] Periodic background push check error:', err);
-    });
-  }, 2 * 60 * 1000);
+  // Schedule periodic background hearing check every 2 minutes (when server is long-running)
+  if (process.env.VERCEL !== '1' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    setInterval(() => {
+      checkAndDispatchHearingNotifications().catch((err) => {
+        console.error('[Scheduler] Periodic background push check error:', err);
+      });
+    }, 2 * 60 * 1000);
 
-  // Initial trigger after server startup
-  setTimeout(() => {
-    checkAndDispatchHearingNotifications().catch((err) => {
-      console.warn('[Startup] Initial push check error:', err);
-    });
-  }, 3000);
+    setTimeout(() => {
+      checkAndDispatchHearingNotifications().catch((err) => {
+        console.warn('[Startup] Initial push check error:', err);
+      });
+    }, 3000);
+  }
+
+  return { app, db, mongoClient };
+  })();
+
+  return appPromise;
+}
+
+export async function startServer() {
+  const { app } = await getApp();
+  const PORT = Number(process.env.PORT) || 3000;
+  const isProduction = process.env.NODE_ENV === 'production';
 
   // Serve Frontend Assets: Vite middleware in Development, static dist/ in Production
   if (!isProduction) {
@@ -1692,7 +1749,10 @@ IMPORTANT: Return ONLY valid JSON. Absolutely zero markdown framing outside the 
   });
 }
 
-startServer().catch((fatalErr) => {
-  console.error('[Server] Fatal server startup failure:', fatalErr);
-  process.exit(1);
-});
+// Only start the HTTP listener if not running inside a serverless environment (e.g. Vercel)
+if (process.env.VERCEL !== '1' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  startServer().catch((fatalErr) => {
+    console.error('[Server] Fatal server startup failure:', fatalErr);
+    process.exit(1);
+  });
+}

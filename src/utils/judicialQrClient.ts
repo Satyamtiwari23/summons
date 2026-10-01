@@ -250,7 +250,7 @@ export function openECourtsSearch(cnr?: string): boolean {
   if (typeof window !== 'undefined') {
     try {
       const opened = window.open(
-        'https://services.ecourts.gov.in/',
+        'https://services.ecourts.gov.in/ecourtindia_v6/',
         '_blank',
         'noopener,noreferrer'
       );

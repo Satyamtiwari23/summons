@@ -30,19 +30,21 @@ import {
   QrLookupResponse,
   validateClientQrPayload,
 } from '../utils/judicialQrClient';
+import { CnrDetectedModal } from './CnrDetectedModal';
 
 export interface JudicialQrScannerModalProps {
   isOpen: boolean;
   onClose: () => void;
   onUseCaseDetails?: (caseData: NormalizedCaseData, rawPayload: string, sessionId?: string) => void;
   onScanSuccess?: (decodedPayload: string, sessionId?: string) => void;
-  onManualEntryFallback?: () => void;
+  onManualEntryFallback?: (cnr?: string) => void;
   sessionScanId?: string;
 }
 
 type ScannerPhase =
   | 'scanning'
   | 'detected'
+  | 'cnr_detected'
   | 'loading'
   | 'case_found'
   | 'action_required'
@@ -595,29 +597,39 @@ export const JudicialQrScannerModal: React.FC<JudicialQrScannerModalProps> = ({
       setPhase('detected');
       setDetectedQrPayload(payload);
 
+      // Parse QR code payload to find valid 16-character CNR
       const parsed = parseJudicialQR(payload);
-      const extractedCnr =
-        parsed.cnrNumber ||
-        (/^[A-Za-z]{2}[A-Za-z0-9]{2}\d{12}$/.test(payload.trim()) ? payload.trim().toUpperCase() : '');
-
-      if (extractedCnr) {
-        setCnrNumber(extractedCnr);
-        setManualCnrInput(extractedCnr);
-        try {
-          sessionStorage.setItem('sm_current_cnr', extractedCnr);
-        } catch (_) {}
+      let extractedCnr = parsed.cnrNumber;
+      if (!extractedCnr) {
+        const match = payload.match(/\b([A-Za-z]{2}[A-Za-z0-9]{2}\d{12})\b/);
+        if (match) {
+          extractedCnr = match[1].toUpperCase();
+        }
       }
 
-      // Begin backend lookup flow after brief confirmation animation
+      if (extractedCnr && /^[A-Za-z]{2}[A-Za-z0-9]{2}\d{12}$/.test(extractedCnr)) {
+        const cleanCnr = extractedCnr.toUpperCase();
+        setCnrNumber(cleanCnr);
+        setManualCnrInput(cleanCnr);
+        try {
+          sessionStorage.setItem('sm_current_cnr', cleanCnr);
+        } catch (_) {}
+
+        // Open CNR Detected Popup
+        setTimeout(() => {
+          setPhase('cnr_detected');
+        }, 300);
+        return;
+      }
+
+      // If no valid CNR is detected in the QR code
       setTimeout(() => {
-        if (extractedCnr) {
-          handleLookupCnr(extractedCnr);
-        } else {
-          processQrPayload(payload);
-        }
-      }, 450);
+        setPhase('error');
+        setErrorCode('CNR_NOT_FOUND');
+        setErrorMessage('CNR number not found. You can enter it manually.');
+      }, 300);
     },
-    [stopCamera, handleLookupCnr, processQrPayload]
+    [stopCamera]
   );
 
   // Frame scanner loop using BarcodeDetector API + jsQR fallback
@@ -823,6 +835,24 @@ export const JudicialQrScannerModal: React.FC<JudicialQrScannerModalProps> = ({
               {detectedQrPayload}
             </p>
           </div>
+        )}
+
+        {/* PHASE: CNR DETECTED MODAL */}
+        {phase === 'cnr_detected' && (
+          <CnrDetectedModal
+            isOpen={true}
+            cnrNumber={cnrNumber || manualCnrInput}
+            rawPayload={detectedQrPayload || undefined}
+            onClose={handleClose}
+            onEnterDetailsManually={(cnr) => {
+              if (onManualEntryFallback) {
+                onManualEntryFallback(cnr);
+              } else if (onScanSuccess) {
+                onScanSuccess(cnr);
+              }
+              handleClose();
+            }}
+          />
         )}
 
         {/* PHASE C: PROGRESS & LOADING STATE MACHINE */}
@@ -1163,35 +1193,42 @@ export const JudicialQrScannerModal: React.FC<JudicialQrScannerModalProps> = ({
             </div>
 
             {/* Useful Recovery Action Buttons */}
-            <div className="grid grid-cols-2 gap-2 pt-2">
+            <div className="flex flex-col gap-2 pt-2">
               <button
                 type="button"
-                onClick={startCamera}
-                className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                onClick={() => {
+                  if (onManualEntryFallback) {
+                    onManualEntryFallback();
+                  }
+                  handleClose();
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 text-black font-bold text-xs flex items-center justify-center gap-2 shadow-md active:scale-98 transition-all cursor-pointer"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Scan Again</span>
+                <Edit3 className="w-4 h-4" />
+                <span>Enter Details Manually</span>
               </button>
 
-              <label className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
-                <Upload className="w-3.5 h-3.5" />
-                <span>Upload QR</span>
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={handleUploadFile}
-                  className="hidden"
-                />
-              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Scan Again</span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setPhase('manual_input')}
-                className="py-2.5 px-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer col-span-2"
-              >
-                <Edit3 className="w-3.5 h-3.5" />
-                <span>Continue Manually / Enter CNR</span>
-              </button>
+                <label className="py-2.5 px-3 rounded-xl bg-white/10 hover:bg-white/20 text-zinc-100 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer">
+                  <Upload className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Upload QR</span>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleUploadFile}
+                    className="hidden"
+                  />
+                </label>
+              </div>
             </div>
           </div>
         )}
