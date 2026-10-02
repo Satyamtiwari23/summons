@@ -119,62 +119,97 @@ export async function getApp() {
     const app = express();
     const isProduction = process.env.NODE_ENV === 'production';
 
-    // --- MongoDB Setup with In-Memory Mock Fallback ---
+    // --- MongoDB Setup with Multi-Mode Resilient Connection & Fallback ---
     let mongoClient: MongoClient | null = null;
     let db: any = null;
+    const targetDbName = process.env.MONGODB_DB_NAME || process.env.MONGODB_DB || 'summons_app';
 
-  if (process.env.MONGODB_URI) {
-    try {
-      console.info('[Server] Connecting to MongoDB Atlas / cluster...');
-      mongoClient = new MongoClient(process.env.MONGODB_URI, {
-        serverSelectionTimeoutMS: 8000,
-        serverApi: {
-          version: ServerApiVersion.v1,
-          strict: true,
-          deprecationErrors: true,
+    if (process.env.MONGODB_URI) {
+      const rawUri = process.env.MONGODB_URI.trim();
+      console.info(`[MongoDB] Attempting connection to database: '${targetDbName}'...`);
+
+      const connectionStrategies = [
+        {
+          name: 'Standard Driver Connection',
+          options: {
+            serverSelectionTimeoutMS: 5000,
+            connectTimeoutMS: 5000,
+          }
+        },
+        {
+          name: 'ServerApi v1 Unified Mode',
+          options: {
+            serverSelectionTimeoutMS: 5000,
+            connectTimeoutMS: 5000,
+            serverApi: {
+              version: ServerApiVersion.v1,
+              strict: false,
+              deprecationErrors: true,
+            }
+          }
+        },
+        {
+          name: 'Direct TLS Compatibility Mode',
+          options: {
+            serverSelectionTimeoutMS: 5000,
+            connectTimeoutMS: 5000,
+            tls: true,
+            tlsAllowInvalidCertificates: true,
+          }
         }
-      });
-      await mongoClient.connect();
-      db = mongoClient.db(process.env.MONGODB_DB_NAME || 'summons_app');
-      console.info('[Server] Successfully connected to MongoDB');
+      ];
 
-      // Ensure indexes for efficient querying safely without crashing on existing indexes
-      const safeCreateIndex = async (colName: string, spec: any, options: any = {}) => {
+      for (const strat of connectionStrategies) {
         try {
-          await db.collection(colName).createIndex(spec, options);
-        } catch (indexErr: any) {
-          console.warn(`[Server] Index on ${colName} (${JSON.stringify(spec)}) skipped or already exists:`, indexErr.message);
+          mongoClient = new MongoClient(rawUri, strat.options as any);
+          await mongoClient.connect();
+          db = mongoClient.db(targetDbName);
+          // Ping command to verify round-trip database readiness
+          await db.command({ ping: 1 });
+          console.info(`[MongoDB] Connected successfully to database '${targetDbName}' via ${strat.name}.`);
+          break;
+        } catch (connErr: any) {
+          console.warn(`[MongoDB] Connection attempt (${strat.name}) notice:`, connErr.message || connErr);
+          if (mongoClient) {
+            try { await mongoClient.close(); } catch (_) {}
+            mongoClient = null;
+          }
+          db = null;
         }
-      };
-
-      await safeCreateIndex('summons', { userId: 1 });
-      await safeCreateIndex('summons', { userId: 1, createdAt: -1 });
-      await safeCreateIndex('summons', { userId: 1, updatedAt: -1 });
-      await safeCreateIndex('witnesses', { userId: 1 });
-      await safeCreateIndex('users', { email: 1 }, { unique: true, sparse: true });
-      await safeCreateIndex('users', { providerId: 1 }, { sparse: true });
-      await safeCreateIndex('notifications', { userId: 1 });
-      await safeCreateIndex('notifications', { uniqueKey: 1 }, { unique: true, sparse: true });
-      await safeCreateIndex('fcm_tokens', { userId: 1 });
-      await safeCreateIndex('fcm_tokens', { token: 1 }, { unique: true, sparse: true });
-    } catch (err: any) {
-      if (isProduction) {
-        console.error('[Server:ERROR] Failed to connect to MongoDB in production mode:', err.message || err);
-      } else {
-        console.warn('[Server] Failed to connect to MongoDB, falling back to In-Memory DB:', err.message || err);
       }
-      db = null;
-    }
-  } else {
-    if (isProduction) {
-      console.warn('[Server:WARN] MONGODB_URI environment variable is not defined in production.');
-    }
-  }
 
-  if (!db) {
-    console.info('[Server] Active: In-Memory Database Fallback (with pre-seeded officers, summons, and witnesses).');
-    db = createInMemoryDatabase();
-  }
+      if (db) {
+        // Ensure indexes for efficient querying safely without crashing on existing indexes
+        const safeCreateIndex = async (colName: string, spec: any, options: any = {}) => {
+          try {
+            await db.collection(colName).createIndex(spec, options);
+          } catch (indexErr: any) {
+            console.warn(`[MongoDB] Index on ${colName} skipped/exists:`, indexErr.message);
+          }
+        };
+
+        await safeCreateIndex('summons', { userId: 1 });
+        await safeCreateIndex('summons', { userId: 1, createdAt: -1 });
+        await safeCreateIndex('summons', { userId: 1, updatedAt: -1 });
+        await safeCreateIndex('witnesses', { userId: 1 });
+        await safeCreateIndex('users', { email: 1 }, { unique: true, sparse: true });
+        await safeCreateIndex('users', { providerId: 1 }, { sparse: true });
+        await safeCreateIndex('notifications', { userId: 1 });
+        await safeCreateIndex('notifications', { uniqueKey: 1 }, { unique: true, sparse: true });
+        await safeCreateIndex('fcm_tokens', { userId: 1 });
+        await safeCreateIndex('fcm_tokens', { token: 1 }, { unique: true, sparse: true });
+        console.info(`[MongoDB] Collections and indexes verified for '${targetDbName}'.`);
+      }
+    } else {
+      if (isProduction) {
+        console.warn('[MongoDB:WARN] MONGODB_URI environment variable is not defined.');
+      }
+    }
+
+    if (!db) {
+      console.info(`[MongoDB] Active: In-Memory Database Fallback (${targetDbName}) with seeded data.`);
+      db = createInMemoryDatabase();
+    }
 
   // ---------------------
 
@@ -833,24 +868,34 @@ export async function getApp() {
       delete updates.userId;
       delete updates.ownerId;
 
-      await db.collection('summons').updateOne(
-        {
-          _id: id,
-          $or: [
-            { userId: req.user.uid },
-            { ownerId: req.user.uid },
-            ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
-          ]
-        },
+      const idFilter = {
+        $or: [
+          { _id: id },
+          ...(ObjectId.isValid(id) ? [{ _id: new ObjectId(id) }] : [])
+        ]
+      };
+      const userFilter = {
+        $or: [
+          { userId: req.user.uid },
+          { ownerId: req.user.uid },
+          ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
+        ]
+      };
+
+      const result = await db.collection('summons').updateOne(
+        { $and: [idFilter, userFilter] },
         { $set: updates }
       );
+
+      console.info(`[MongoDB] Summons update '${id}': matched=${result.matchedCount}, modified=${result.modifiedCount}`);
+
       // Trigger background push check after updates
       setTimeout(() => {
         checkAndDispatchHearingNotifications(req.user.uid).catch((e) =>
           console.warn('[Push] Notification check error after update:', e)
         );
       }, 100);
-      res.json({ success: true });
+      res.json({ success: true, updatedCount: result.modifiedCount });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -860,16 +905,24 @@ export async function getApp() {
     if (!db) return res.status(503).json({ error: 'Database disconnected' });
     try {
       const { id } = req.params;
-      await db.collection('summons').deleteOne({
-        _id: id,
+      const idFilter = {
+        $or: [
+          { _id: id },
+          ...(ObjectId.isValid(id) ? [{ _id: new ObjectId(id) }] : [])
+        ]
+      };
+      const userFilter = {
         $or: [
           { userId: req.user.uid },
           { ownerId: req.user.uid },
           ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
         ]
-      });
+      };
+
+      const result = await db.collection('summons').deleteOne({ $and: [idFilter, userFilter] });
       await db.collection('notifications').deleteMany({ summonsId: id });
-      res.json({ success: true });
+      console.info(`[MongoDB] Summons delete '${id}': deleted=${result.deletedCount}`);
+      res.json({ success: true, deletedCount: result.deletedCount });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -927,18 +980,25 @@ export async function getApp() {
       delete updates.userId;
       delete updates.ownerId;
 
-      await db.collection('witnesses').updateOne(
-        {
-          _id: id,
-          $or: [
-            { userId: req.user.uid },
-            { ownerId: req.user.uid },
-            ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
-          ]
-        },
+      const idFilter = {
+        $or: [
+          { _id: id },
+          ...(ObjectId.isValid(id) ? [{ _id: new ObjectId(id) }] : [])
+        ]
+      };
+      const userFilter = {
+        $or: [
+          { userId: req.user.uid },
+          { ownerId: req.user.uid },
+          ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
+        ]
+      };
+
+      const result = await db.collection('witnesses').updateOne(
+        { $and: [idFilter, userFilter] },
         { $set: updates }
       );
-      res.json({ success: true });
+      res.json({ success: true, updatedCount: result.modifiedCount });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -948,15 +1008,22 @@ export async function getApp() {
     if (!db) return res.status(503).json({ error: 'Database disconnected' });
     try {
       const { id } = req.params;
-      await db.collection('witnesses').deleteOne({
-        _id: id,
+      const idFilter = {
+        $or: [
+          { _id: id },
+          ...(ObjectId.isValid(id) ? [{ _id: new ObjectId(id) }] : [])
+        ]
+      };
+      const userFilter = {
         $or: [
           { userId: req.user.uid },
           { ownerId: req.user.uid },
           ...(req.user._id ? [{ userId: req.user._id.toString() }, { ownerId: req.user._id.toString() }] : [])
         ]
-      });
-      res.json({ success: true });
+      };
+
+      const result = await db.collection('witnesses').deleteOne({ $and: [idFilter, userFilter] });
+      res.json({ success: true, deletedCount: result.deletedCount });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

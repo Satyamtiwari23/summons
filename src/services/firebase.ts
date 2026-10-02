@@ -1,6 +1,9 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
+  initializeFirestore,
   getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   collection,
   doc,
   setDoc,
@@ -97,9 +100,33 @@ export const auth = getAuth(app);
 const customDbId =
   (import.meta.env.VITE_FIREBASE_FIRESTORE_DATABASE_ID as string) ||
   firebaseConfigJson.firestoreDatabaseId;
-export const db = customDbId && customDbId !== '(default)'
-  ? getFirestore(app, customDbId)
-  : getFirestore(app);
+
+function initFirestoreInstance() {
+  const settings: any = {
+    experimentalForceLongPolling: true,
+  };
+  try {
+    if (typeof window !== 'undefined') {
+      settings.localCache = persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      });
+    }
+  } catch (_) {}
+
+  try {
+    if (customDbId && customDbId !== '(default)') {
+      return initializeFirestore(app, settings, customDbId);
+    }
+    return initializeFirestore(app, settings);
+  } catch (_) {
+    // If initializeFirestore fails or already called, retrieve existing instance
+    return customDbId && customDbId !== '(default)'
+      ? getFirestore(app, customDbId)
+      : getFirestore(app);
+  }
+}
+
+export const db = initFirestoreInstance();
 
 export const storage = getStorage(app);
 

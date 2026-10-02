@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { Summon, MetricSummary, WitnessPerson } from '../types';
 import { useAuth } from './AuthContext';
 import { requestPushPermissionAndSubscribe } from '../services/fcmService';
+import { apiFetch } from '../services/apiClient';
 import {
   db,
   collection,
@@ -129,37 +130,35 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Initial backend fast-fetch to populate state immediately without waiting on Firestore connection
     const loadBackendData = async () => {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 2500);
-        const [summonsRes, witnessesRes] = await Promise.all([
-          fetch('/api/summons', { credentials: 'include', signal: controller.signal }).catch(() => null),
-          fetch('/api/witnesses', { credentials: 'include', signal: controller.signal }).catch(() => null),
-        ]).finally(() => clearTimeout(timer));
+        const [apiSummons, apiWitnesses] = await Promise.all([
+          apiFetch<Summon[]>('/api/summons').catch((e) => {
+            console.warn('[SummonContext] summons fast-fetch error:', e);
+            return [];
+          }),
+          apiFetch<WitnessPerson[]>('/api/witnesses').catch((e) => {
+            console.warn('[SummonContext] witnesses fast-fetch error:', e);
+            return [];
+          }),
+        ]);
 
         if (!isMounted || activeUidRef.current !== uid) return;
 
-        if (summonsRes && summonsRes.ok) {
-          const apiSummons = await summonsRes.json().catch(() => []);
-          if (Array.isArray(apiSummons) && apiSummons.length > 0) {
-            setSummons((prev) => {
-              const combined = apiSummons;
-              saveSummonsCache(uid, combined);
-              return combined;
-            });
-            setIsLoading(false);
-          }
+        if (Array.isArray(apiSummons) && apiSummons.length > 0) {
+          setSummons((prev) => {
+            const combined = apiSummons;
+            saveSummonsCache(uid, combined);
+            return combined;
+          });
+          setIsLoading(false);
         }
 
-        if (witnessesRes && witnessesRes.ok) {
-          const apiWitnesses = await witnessesRes.json().catch(() => []);
-          if (Array.isArray(apiWitnesses) && apiWitnesses.length > 0) {
-            setWitnesses((prev) => {
-              const combined = apiWitnesses;
-              saveWitnessesCache(uid, combined);
-              return combined;
-            });
-            setIsLoadingWitnesses(false);
-          }
+        if (Array.isArray(apiWitnesses) && apiWitnesses.length > 0) {
+          setWitnesses((prev) => {
+            const combined = apiWitnesses;
+            saveWitnessesCache(uid, combined);
+            return combined;
+          });
+          setIsLoadingWitnesses(false);
         }
       } catch (e) {
         console.warn('[SummonContext] Initial backend fast-fetch notice:', e);
@@ -437,18 +436,15 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.warn('[SummonContext] Firestore addSummon notice:', fsErr);
     }
 
-    // 2. Also synchronize with backend API endpoint
+    // 2. Synchronize with backend API endpoint & MongoDB database
     try {
-      await fetch('/api/summons', {
+      await apiFetch('/api/summons', {
         method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newSummon)
+        body: JSON.stringify(newSummon),
       });
-    } catch (apiErr) {
-      console.warn('[SummonContext] Backend sync addSummon notice:', apiErr);
+      console.info(`[SummonContext] Successfully persisted summons '${summonId}' to MongoDB.`);
+    } catch (apiErr: any) {
+      console.error('[SummonContext] Backend MongoDB addSummon error:', apiErr?.message || apiErr);
     }
 
     // Local state is updated via Firestore onSnapshot, but update immediately for instant responsiveness
@@ -489,18 +485,15 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.warn('[SummonContext] Firestore updateSummon notice:', fsErr);
     }
 
-    // 2. Synchronize with backend API
+    // 2. Synchronize with backend API & MongoDB
     try {
-      await fetch(`/api/summons/${id}`, {
+      await apiFetch(`/api/summons/${id}`, {
         method: 'PUT',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updatedRecord)
+        body: JSON.stringify(updatedRecord),
       });
-    } catch (apiErr) {
-      console.warn('[SummonContext] Backend sync updateSummon notice:', apiErr);
+      console.info(`[SummonContext] Successfully updated summons '${id}' in MongoDB.`);
+    } catch (apiErr: any) {
+      console.error('[SummonContext] Backend MongoDB updateSummon error:', apiErr?.message || apiErr);
     }
 
     setSummons((prev) => {
@@ -523,14 +516,14 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.warn('[SummonContext] Firestore deleteSummon notice:', fsErr);
       }
 
-      // 2. Delete from backend API
+      // 2. Delete from backend API & MongoDB
       try {
-        await fetch(`/api/summons/${id}`, {
+        await apiFetch(`/api/summons/${id}`, {
           method: 'DELETE',
-          credentials: 'include',
         });
-      } catch (apiErr) {
-        console.warn('[SummonContext] Backend sync deleteSummon notice:', apiErr);
+        console.info(`[SummonContext] Successfully deleted summons '${id}' in MongoDB.`);
+      } catch (apiErr: any) {
+        console.error('[SummonContext] Backend MongoDB deleteSummon error:', apiErr?.message || apiErr);
       }
 
       if (summonToDelete) {
@@ -605,18 +598,15 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.warn('[SummonContext] Firestore addWitness notice:', fsErr);
     }
 
-    // 2. Write to backend API
+    // 2. Write to backend API & MongoDB
     try {
-      await fetch('/api/witnesses', {
+      await apiFetch('/api/witnesses', {
         method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(newWitness)
+        body: JSON.stringify(newWitness),
       });
-    } catch (apiErr) {
-      console.warn('[SummonContext] Backend sync addWitness notice:', apiErr);
+      console.info(`[SummonContext] Successfully persisted witness '${witnessId}' to MongoDB.`);
+    } catch (apiErr: any) {
+      console.error('[SummonContext] Backend MongoDB addWitness error:', apiErr?.message || apiErr);
     }
 
     setWitnesses((prev) => {
@@ -641,18 +631,15 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       console.warn('[SummonContext] Firestore updateWitness notice:', fsErr);
     }
 
-    // 2. Update in backend API
+    // 2. Update in backend API & MongoDB
     try {
-      await fetch(`/api/witnesses/${id}`, {
+      await apiFetch(`/api/witnesses/${id}`, {
         method: 'PUT',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(updatedRecord)
+        body: JSON.stringify(updatedRecord),
       });
-    } catch (apiErr) {
-      console.warn('[SummonContext] Backend sync updateWitness notice:', apiErr);
+      console.info(`[SummonContext] Successfully updated witness '${id}' in MongoDB.`);
+    } catch (apiErr: any) {
+      console.error('[SummonContext] Backend MongoDB updateWitness error:', apiErr?.message || apiErr);
     }
 
     setWitnesses((prev) => {
@@ -673,14 +660,14 @@ export const SummonProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         console.warn('[SummonContext] Firestore deleteWitness notice:', fsErr);
       }
 
-      // 2. Delete from backend API
+      // 2. Delete from backend API & MongoDB
       try {
-        await fetch(`/api/witnesses/${id}`, {
+        await apiFetch(`/api/witnesses/${id}`, {
           method: 'DELETE',
-          credentials: 'include',
         });
-      } catch (apiErr) {
-        console.warn('[SummonContext] Backend sync deleteWitness notice:', apiErr);
+        console.info(`[SummonContext] Successfully deleted witness '${id}' in MongoDB.`);
+      } catch (apiErr: any) {
+        console.error('[SummonContext] Backend MongoDB deleteWitness error:', apiErr?.message || apiErr);
       }
 
       setWitnesses((prev) => {

@@ -92,6 +92,7 @@ async function runProductionReadinessTests() {
     assert('Database layer initialized', !!db);
 
     if (db) {
+      // Test basic connection
       const testCol = db.collection('test_connection');
       const testDoc = { testId: 'audit_test_' + Date.now(), timestamp: new Date() };
       const insResult = await testCol.insertOne(testDoc);
@@ -103,6 +104,133 @@ async function runProductionReadinessTests() {
       await testCol.deleteOne({ _id: insResult.insertedId });
       const verifyDeleted = await testCol.findOne({ _id: insResult.insertedId });
       assert('Database cleanup test succeeded', verifyDeleted === null);
+
+      // Test 6: Summons CRUD in MongoDB collection 'summons'
+      console.log('\n--- 6. MongoDB Summons Collection CRUD Tests ---');
+      const testSummonId = 'test_sum_' + Date.now();
+      const testUserId = 'test_officer_uid_101';
+      const testSummonDoc = {
+        _id: testSummonId,
+        userId: testUserId,
+        ownerId: testUserId,
+        summonNumber: 'TEST/SUM/2026/001',
+        caseNumber: 'FIR 101/2026 PS Connaught Place',
+        personName: 'Test Accused Person',
+        courtName: 'Tis Hazari District Court',
+        hearingDate: '2026-10-15',
+        status: 'Pending',
+        urgency: 'High',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // 1. Create / Upsert
+      await db.collection('summons').updateOne(
+        { _id: testSummonId },
+        { $set: testSummonDoc },
+        { upsert: true }
+      );
+      const insertedSummon = await db.collection('summons').findOne({ _id: testSummonId });
+      assert('MongoDB summons document created and verified', insertedSummon?.personName === 'Test Accused Person');
+
+      // 2. Read
+      const userSummons = await db.collection('summons').find({ userId: testUserId }).toArray();
+      assert('MongoDB summons queried by userId successfully', Array.isArray(userSummons) && userSummons.length >= 1);
+
+      // 3. Update
+      await db.collection('summons').updateOne(
+        { _id: testSummonId, userId: testUserId },
+        { $set: { status: 'Completed', servedDate: '2026-10-02', updatedAt: new Date().toISOString() } }
+      );
+      const updatedSummon = await db.collection('summons').findOne({ _id: testSummonId });
+      assert('MongoDB summons updated and status verified', updatedSummon?.status === 'Completed' && updatedSummon?.servedDate === '2026-10-02');
+
+      // 4. Delete & Cleanup
+      const delResult = await db.collection('summons').deleteOne({ _id: testSummonId, userId: testUserId });
+      assert('MongoDB summons deleted successfully', delResult.deletedCount === 1);
+      const afterDel = await db.collection('summons').findOne({ _id: testSummonId });
+      assert('MongoDB summons confirmed removed', afterDel === null);
+
+      // Test 7: Witnesses CRUD in MongoDB collection 'witnesses'
+      console.log('\n--- 7. MongoDB Witnesses Collection CRUD Tests ---');
+      const testWitnessId = 'test_wit_' + Date.now();
+      const testWitnessDoc = {
+        _id: testWitnessId,
+        userId: testUserId,
+        ownerId: testUserId,
+        name: 'Dr. Expert Witness',
+        phone: '9876543210',
+        caseNumber: 'FIR 101/2026',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await db.collection('witnesses').updateOne(
+        { _id: testWitnessId },
+        { $set: testWitnessDoc },
+        { upsert: true }
+      );
+      const insertedWit = await db.collection('witnesses').findOne({ _id: testWitnessId });
+      assert('MongoDB witness document created and verified', insertedWit?.name === 'Dr. Expert Witness');
+
+      await db.collection('witnesses').deleteOne({ _id: testWitnessId, userId: testUserId });
+      const afterDelWit = await db.collection('witnesses').findOne({ _id: testWitnessId });
+      assert('MongoDB witness cleaned up successfully', afterDelWit === null);
+
+      // Test 8: Reviews CRUD in MongoDB collection 'reviews'
+      console.log('\n--- 8. MongoDB Reviews Collection CRUD Tests ---');
+      const testReviewDoc = {
+        _id: testUserId,
+        userId: testUserId,
+        officerName: 'Inspector Sharma',
+        badgeNumber: 'DL-POL-101',
+        rank: 'Inspector',
+        rating: 5,
+        feedback: 'Outstanding summons management workflow and seamless tracking.',
+        appVersion: '1.0.0',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await db.collection('reviews').updateOne(
+        { _id: testUserId },
+        { $set: testReviewDoc },
+        { upsert: true }
+      );
+      const savedReview = await db.collection('reviews').findOne({ _id: testUserId });
+      assert('MongoDB review document created and verified', savedReview?.rating === 5 && savedReview?.officerName === 'Inspector Sharma');
+
+      const allReviews = await db.collection('reviews').find({}).toArray();
+      assert('MongoDB reviews list query returns saved records', Array.isArray(allReviews) && allReviews.length >= 1);
+
+      await db.collection('reviews').deleteOne({ _id: testUserId });
+      const afterDelReview = await db.collection('reviews').findOne({ _id: testUserId });
+      assert('MongoDB review cleaned up successfully', afterDelReview === null);
+
+      // Test 9: Notifications CRUD in MongoDB collection 'notifications'
+      console.log('\n--- 9. MongoDB Notifications Collection CRUD Tests ---');
+      const testNotifId = 'test_notif_' + Date.now();
+      const testNotifDoc = {
+        _id: testNotifId,
+        userId: testUserId,
+        title: 'Court Hearing Reminder',
+        message: 'Upcoming court appearance scheduled for tomorrow at Tis Hazari.',
+        type: 'HEARING_REMINDER',
+        read: false,
+        createdAt: new Date().toISOString(),
+      };
+
+      await db.collection('notifications').updateOne(
+        { _id: testNotifId },
+        { $set: testNotifDoc },
+        { upsert: true }
+      );
+      const savedNotif = await db.collection('notifications').findOne({ _id: testNotifId });
+      assert('MongoDB notification created and verified', savedNotif?.title === 'Court Hearing Reminder');
+
+      await db.collection('notifications').deleteOne({ _id: testNotifId, userId: testUserId });
+      const afterDelNotif = await db.collection('notifications').findOne({ _id: testNotifId });
+      assert('MongoDB notification cleaned up successfully', afterDelNotif === null);
     }
   } catch (err: any) {
     assert('Express app and DB initialize without crash', false, err.message);
