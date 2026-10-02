@@ -709,21 +709,49 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
     setOriginalAttachmentPreview(result.originalDataUrl);
     setViewingOriginalDoc(false);
 
-    // Check if document was unreadable
+    // Check if document was unreadable or failed completely
     if (result.ocrResult.isUnreadable || !result.ocrResult.success) {
-      setIsUnreadable(true);
-      setOcrSuccess(false);
-      setDetectedFields(new Set());
-      setFieldMeta({});
-      setOcrMessage(
-        result.ocrResult.message ||
-          "Unable to read this document. Please upload a clearer image, scan again, or enter details manually."
-      );
-      showToast(
-        "Unable to read this document. You may scan again, upload another, or enter details manually.",
-        'warning',
-        'Unreadable Document'
-      );
+      const partialData = result.ocrResult.data;
+      const detected = new Set(partialData?.detectedFields || []);
+
+      if (detected.size > 0 && partialData) {
+        setIsUnreadable(false);
+        setOcrSuccess(true);
+        setDetectedFields(detected);
+
+        if (partialData.summonNumber) setSummonNumber(partialData.summonNumber);
+        if (partialData.caseNumber) setCaseNumber(partialData.caseNumber);
+        if (partialData.personName) setPersonName(partialData.personName);
+        if (partialData.fatherName) setFatherName(partialData.fatherName);
+        if (partialData.address) setAddress(partialData.address);
+        if (partialData.courtName) setCourtName(partialData.courtName);
+        if (partialData.courtAddress) setCourtAddress(partialData.courtAddress);
+        if (partialData.policeStation) setPoliceStation(partialData.policeStation);
+        if (partialData.district) setDistrict(partialData.district);
+        if (partialData.state) setState(partialData.state);
+        if (partialData.hearingDate) setHearingDate(partialData.hearingDate);
+        if (partialData.issuingAuthority) setIssuingAuthority(partialData.issuingAuthority);
+        if (partialData.offenseCharges) setOffenseCharges(partialData.offenseCharges);
+        if (partialData.urgency) setUrgency(partialData.urgency);
+
+        populateFieldMetaFromOcr(partialData, confidenceThreshold);
+        setOcrMessage('Partial extraction: Please verify and complete the highlighted particulars below.');
+        showToast('Extracted partial particulars. Please verify details.', 'info', 'Partial Extraction');
+      } else {
+        setIsUnreadable(true);
+        setOcrSuccess(false);
+        setDetectedFields(new Set());
+        setFieldMeta({});
+        setOcrMessage(
+          result.ocrResult.message ||
+            "Unable to extract fields from this document. Your scan is attached—please complete details manually or retry."
+        );
+        showToast(
+          "Your scan has been attached. Please complete summon particulars manually or retry.",
+          'info',
+          'Document Attached'
+        );
+      }
       setCurrentStep('review');
       return;
     }

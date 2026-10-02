@@ -74,8 +74,11 @@ export const parseSummonTextStrict = (rawText: string): ExtractedSummonData => {
   const getMatch = (patterns: RegExp[]): string => {
     for (const pattern of patterns) {
       const match = rawText.match(pattern);
-      if (match && match[1] && match[1].trim().length > 1) {
-        return match[1].trim();
+      if (match) {
+        const val = (match[1] || match[0] || '').trim();
+        if (val.length > 1) {
+          return val;
+        }
       }
     }
     return '';
@@ -84,36 +87,40 @@ export const parseSummonTextStrict = (rawText: string): ExtractedSummonData => {
   const detected: string[] = [];
 
   const summonNo = getMatch([
-    /(?:summon|warrant|notice)\s*(?:no|number|#)?[:.\s-]*([A-Z0-9\/-]+)/i,
-    /(?:cnr\s*no\.?|cnr)[:.\s-]*([A-Z0-9]+)/i,
+    /(?:summon|warrant|notice)\s*(?:no|number|#)\s*[:.\s-]+\s*([A-Z0-9\/-]+)/i,
+    /(?:cnr\s*no\.?|cnr)\s*[:.\s-]+\s*([A-Z0-9]+)/i,
+    /(?:summon|warrant|notice)\s*[:.\s-]+\s*([A-Z0-9\/-]{4,})/i,
   ]);
   if (summonNo) detected.push('summonNumber');
 
   const caseNo = getMatch([
-    /(?:fir|case|cr\.?\s*no)\s*(?:no|number|#)?[:.\s-]*([A-Z0-9\/-]+(?:\s*of\s*\d{4})?)/i,
-    /(?:cr\.?\s*case\s*no\.?)[:.\s-]*([A-Z0-9\/-]+)/i,
+    /(?:fir|case|cr\.?\s*no)\s*(?:no|number|#)?\s*[:.\s-]+\s*([A-Z0-9\/\s-]+?(?=\s*(?:u\/s|under|police|dated|,|\n|$)))/i,
+    /(?:cr\.?\s*case\s*no\.?)\s*[:.\s-]+\s*([A-Z0-9\/-]+)/i,
   ]);
   if (caseNo) detected.push('caseNumber');
 
   const name = getMatch([
-    /(?:to|shri|smt|respondent|accused|summoned|name)[:.\s]+([A-Za-z\s.]+?)(?:\s+(?:s\/o|w\/o|d\/o|r\/o|resident|age|address)|[\n,])/i,
-    /(?:accused\s*person)[:.\s]+([A-Za-z\s.]+)/i,
+    /(?:to\s*:\s*(?:shri|smt|mr|mrs)?\s*|accused\s*name\s*:\s*|person\s*name\s*:\s*|respondent\s*name\s*:\s*)([A-Za-z\s.]+?)(?:\s*(?:s\/o|w\/o|d\/o|r\/o|resident|age|address)|[\n,])/i,
+    /(?:to\s*:\s*)([A-Za-z\s.]+?)(?:\s*(?:s\/o|w\/o|d\/o|r\/o|resident|age|address)|[\n,])/i,
+    /(?:accused|respondent|summoned)\s*[:.\s-]+\s*([A-Za-z\s.]+?)(?:\s+(?:s\/o|w\/o|d\/o|r\/o|resident)|[\n,]|$)/i,
+    /(?:name)\s*[:.\s-]+\s*([A-Za-z\s.]+?)(?:[\n,]|$)/i,
   ]);
-  if (name) detected.push('personName');
+  if (name && !name.toLowerCase().includes('person') && !name.toLowerCase().includes('summon')) detected.push('personName');
 
   const father = getMatch([
-    /(?:s\/o|d\/o|w\/o|son of|daughter of|wife of)[:.\s]+([A-Za-z\s.]+?)(?:[\n,]|r\/o)/i,
+    /(?:s\/o|d\/o|w\/o|son of|daughter of|wife of)\s*(?:shri|smt)?\s*[:.\s]*([A-Za-z\s.]+?)(?:[\n,]|r\/o|address|$)/i,
   ]);
   if (father) detected.push('fatherName');
 
   const addr = getMatch([
-    /(?:r\/o|resident of|address)[:.\s]+([\s\S]+?)(?:police station|ps|district|court|dated|$)/i,
+    /(?:r\/o|resident of|address)\s*[:.\s]+\s*([\s\S]+?)(?:police station|ps|district|court|dated|\n\n|$)/i,
   ]);
   if (addr) detected.push('address');
 
   const court = getMatch([
-    /(?:in the court of|court of|before the)[:.\s]+([A-Za-z\s,.-]+?)(?:delhi|district|court room|at|$)/i,
-    /(chief metropolitan magistrate|district & sessions judge|special ndps court|high court)/i,
+    /(?:in the court of|court of|before the)\s*[:.\s]*([A-Za-z\s,.-]+?)(?:\n|dated|$)/i,
+    /(chief metropolitan magistrate[A-Za-z\s,.-]*)/i,
+    /(district & sessions judge[A-Za-z\s,.-]*)/i,
   ]);
   if (court) detected.push('courtName');
 
@@ -123,7 +130,7 @@ export const parseSummonTextStrict = (rawText: string): ExtractedSummonData => {
   if (courtAddr) detected.push('courtAddress');
 
   const ps = getMatch([
-    /(?:police station|ps)[:.\s]+([A-Za-z\s]+?)(?:district|delhi|case|$)/i,
+    /(?:police station|ps)[:.\s]+([A-Za-z\s]+?)(?:district|delhi|case|,|\n|$)/i,
   ]);
   if (ps) detected.push('policeStation');
 
@@ -477,28 +484,28 @@ export const scanSummonDocument = async (
             isAutofilled: true,
             isUnreadable: false,
             overallConfidence: 0.80,
-            message: `Extracted ${fallbackParsed.detectedFields.length} fields from document.`,
+            message: `Extracted ${fallbackParsed.detectedFields.length} fields from document text.`,
             data: fallbackParsed,
           };
         }
       }
 
-      const hasLegitimateData = detected.length > 0 && Boolean(fieldMap.summonNumber.value || fieldMap.personName.value || fieldMap.caseNumber.value || fieldMap.courtName.value);
-      const isExplicitlyUnreadable = data.isReadable === false || (!hasLegitimateData && (!data.rawText || data.rawText.trim().length === 0));
+      const hasAnyDetectedFields = detected.length > 0;
+      const isCompletelyEmpty = !hasAnyDetectedFields && (!data.rawText || data.rawText.trim().length === 0);
 
-      if (isExplicitlyUnreadable || !hasLegitimateData) {
-        console.info(`[DOCKET] Document marked unreadable or empty.`);
+      if (isCompletelyEmpty) {
+        console.info(`[DOCKET] Document scan yielded 0 detectable judicial fields.`);
         return {
           sessionId: responseSessionId,
           success: false,
           isAutofilled: false,
           isUnreadable: true,
-          message: 'Unable to read this document. Please verify image clarity or enter details manually.',
+          message: 'Unable to extract fields from this document. The image is preserved—you can enter details manually or retry with a clearer angle.',
           data: parseSummonTextStrict(''),
         };
       }
 
-      const avgConfidence = detected.length > 0 ? totalConfidenceSum / detected.length : 0;
+      const avgConfidence = detected.length > 0 ? totalConfidenceSum / detected.length : 0.80;
       const totalDuration = Date.now() - startTime;
       console.info(`[DOCKET] validation completed: ${detected.length} fields (total=${totalDuration}ms)`);
       console.info(`[DOCKET] extraction completed`);
@@ -532,19 +539,27 @@ export const scanSummonDocument = async (
         isAutofilled: detected.length > 0,
         isUnreadable: false,
         overallConfidence: avgConfidence,
-        message: `Extracted ${detected.length} fields from document.`,
+        message: `Extracted ${detected.length} judicial fields from document.`,
         data: extractedData,
       };
     } else {
       const errJson = await res.json().catch(() => ({}));
       console.error(`[DOCKET] Server error HTTP ${res.status}:`, errJson);
 
+      const errorMsg =
+        errJson.error ||
+        (res.status === 413
+          ? 'Image file is too large for transmission. Please retake or crop tighter.'
+          : res.status === 503
+          ? 'Gemini AI service is temporarily unavailable. Please retry shortly.'
+          : 'Unable to read this document.');
+
       return {
         sessionId: errJson.sessionId || sessionId,
         success: false,
         isAutofilled: false,
         isUnreadable: true,
-        message: errJson.error || 'Unable to read this document.',
+        message: errorMsg,
         data: parseSummonTextStrict(''),
       };
     }

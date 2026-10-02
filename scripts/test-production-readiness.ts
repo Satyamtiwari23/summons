@@ -1,7 +1,8 @@
 import { parseJudicialQR } from '../server/services/judicialQrParser';
 import { validateQrLookupRequest } from '../server/validators/caseValidators';
 import { sanitizeFileName, getImageFormatInfo } from '../src/utils/documentDownloadService';
-import { getApp } from '../server';
+import { parseSummonTextStrict, normalizeJudicialDate, validateDocketData } from '../src/utils/ocrService';
+import { getApp } from '../server/app';
 import fs from 'fs';
 import path from 'path';
 
@@ -84,8 +85,49 @@ async function runProductionReadinessTests() {
   const formatInfo = getImageFormatInfo('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
   assert('Detects PNG mime type from data URL correctly', formatInfo.ext === 'png' && formatInfo.mimeType === 'image/png');
 
-  // 5. Express API & Database Integration Test
-  console.log('\n--- 5. Express Backend & Database Integration Tests ---');
+  // 5. AI Docket OCR & Judicial Parsing Unit Tests
+  console.log('\n--- 5. AI Docket OCR & Judicial Parsing Tests ---');
+  const sampleCourtNotice = `
+    IN THE COURT OF SHRI ANAND VERMA, CHIEF METROPOLITAN MAGISTRATE, TIS HAZARI COURTS, DELHI
+    SUMMONS TO ACCUSED PERSON
+    SUMMON NO: SUM/DEL/2026/0921
+    CASE NO: FIR 84/2026 U/S 420/468/471 IPC
+    POLICE STATION: CONNAUGHT PLACE, DISTRICT: CENTRAL DISTRICT
+    TO: SHRI RAJESH KUMAR, S/O SHRI OM PRAKASH
+    ADDRESS: H.NO 42B, SECTOR 14, ROHINI, NEW DELHI
+    HEARING DATE: 25-10-2026
+    YOU ARE HEREBY SUMMONED TO APPEAR BEFORE THIS COURT ON 25/10/2026 AT 10:00 AM.
+  `;
+
+  const parsedNotice = parseSummonTextStrict(sampleCourtNotice);
+  assert('Strict parser extracts summonNumber', parsedNotice.summonNumber.includes('SUM/DEL/2026/0921'));
+  assert('Strict parser extracts caseNumber', parsedNotice.caseNumber.includes('FIR 84/2026'));
+  assert('Strict parser extracts accused personName', parsedNotice.personName.toUpperCase().includes('RAJESH KUMAR'));
+  assert('Strict parser extracts fatherName', parsedNotice.fatherName?.toUpperCase().includes('OM PRAKASH') || false);
+  assert('Strict parser extracts courtName', parsedNotice.courtName.toUpperCase().includes('METROPOLITAN MAGISTRATE'));
+  assert('Strict parser extracts policeStation', parsedNotice.policeStation.toUpperCase().includes('CONNAUGHT PLACE'));
+  assert('Strict parser extracts hearingDate', parsedNotice.hearingDate === '2026-10-25');
+
+  const normalizedDmy = normalizeJudicialDate('15/11/2026');
+  assert('Normalizes DD/MM/YYYY court dates to YYYY-MM-DD', normalizedDmy === '2026-11-15');
+
+  const normalizedDash = normalizeJudicialDate('05-12-2026');
+  assert('Normalizes DD-MM-YYYY court dates to YYYY-MM-DD', normalizedDash === '2026-12-05');
+
+  const validDocket = validateDocketData({
+    summonNumber: 'SUM/DEL/2026/0921',
+    caseNumber: 'FIR 84/2026',
+    personName: 'Rajesh Kumar',
+    courtName: 'Tis Hazari District Court',
+    hearingDate: '2026-10-25',
+  });
+  assert('Docket validator accepts complete summons particulars', validDocket.isValid && validDocket.data.personName === 'Rajesh Kumar');
+
+  const invalidDocket = validateDocketData({});
+  assert('Docket validator rejects empty docket data', !invalidDocket.isValid && invalidDocket.errors.length > 0);
+
+  // 6. Express API & Database Integration Test
+  console.log('\n--- 6. Express Backend & Database Integration Tests ---');
   try {
     const { app, db } = await getApp();
     assert('Express app created successfully', !!app);
