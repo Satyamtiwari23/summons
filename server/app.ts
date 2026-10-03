@@ -99,7 +99,11 @@ function getGeminiApiKey(): string | undefined {
     process.env.GEMINI_API_KEY ||
     process.env.API_KEY ||
     process.env.GOOGLE_API_KEY ||
-    process.env.VITE_GEMINI_API_KEY;
+    process.env.GOOGLE_GENAI_API_KEY ||
+    process.env.GEMINI_KEY ||
+    process.env.GOOGLE_AI_KEY ||
+    process.env.VITE_GEMINI_API_KEY ||
+    process.env.VITE_GOOGLE_API_KEY;
 
   if (!rawKey) return undefined;
   const key = rawKey.trim().replace(/^["']|["']$/g, '').trim();
@@ -1130,9 +1134,9 @@ export async function getApp() {
 
       const apiKey = getGeminiApiKey();
       if (!apiKey || !apiKey.trim()) {
-        console.warn('[OCR Service] Gemini API key not found in server environment.');
+        console.warn('[OCR Service] Gemini API key not found in server environment (GEMINI_API_KEY is not set).');
         return res.status(503).json({
-          error: 'Gemini API key is not configured on the server. Please set GEMINI_API_KEY in environment variables.',
+          error: 'Gemini API key is not configured on the server. Please add GEMINI_API_KEY to your Vercel Project Settings > Environment Variables.',
           code: 'API_KEY_NOT_CONFIGURED',
           sessionId,
         });
@@ -1164,8 +1168,9 @@ export async function getApp() {
         normalizedMime = 'image/jpeg'; // fallback
       }
 
+      const payloadKb = Math.round((cleanBase64.length * 3) / 4 / 1024);
       console.info(
-        `[DOCKET] AI request started (session=${sessionId || 'n/a'}, mime=${normalizedMime}, payload=~${Math.round((cleanBase64.length * 3) / 4 / 1024)} KB)`
+        `[DOCKET] AI request started (session=${sessionId || 'n/a'}, mime=${normalizedMime}, payload=~${payloadKb} KB)`
       );
 
       const ai = new GoogleGenAI({
@@ -1231,39 +1236,35 @@ IMPORTANT: Return ONLY valid JSON. Absolutely zero markdown framing outside the 
       // High-availability candidate models per Gemini SDK specification
       // gemini-3.8-flash is the primary model for multimodal text & document tasks
       const candidateModels = [
-        'gemini-3.8-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-flash-latest',
-        'gemini-3.1-pro-preview',
+        { name: 'gemini-3.8-flash', timeoutMs: 22000 },
+        { name: 'gemini-3.1-flash-lite', timeoutMs: 15000 },
+        { name: 'gemini-flash-latest', timeoutMs: 15000 },
       ];
       let response: any = null;
       let lastModelError: any = null;
 
-      for (const modelName of candidateModels) {
+      for (const candidate of candidateModels) {
+        const modelName = candidate.name;
         try {
-          console.info(`[DOCKET] Attempting legal extraction with ${modelName}...`);
+          console.info(`[DOCKET] Attempting legal extraction with ${modelName} (timeout ${candidate.timeoutMs}ms)...`);
           
-          // Enforce 8.5s per-attempt timeout for fast failover within serverless limits
           const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`Model ${modelName} timed out after 8500ms`)), 8500)
+            setTimeout(() => reject(new Error(`Model ${modelName} timed out after ${candidate.timeoutMs}ms`)), candidate.timeoutMs)
           );
 
           const generatePromise = ai.models.generateContent({
             model: modelName,
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: prompt },
-                  {
-                    inlineData: {
-                      data: cleanBase64,
-                      mimeType: normalizedMime,
-                    },
+            contents: {
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    data: cleanBase64,
+                    mimeType: normalizedMime,
                   },
-                ],
-              },
-            ],
+                },
+              ],
+            },
             config: {
               responseMimeType: 'application/json',
             },
@@ -1275,7 +1276,7 @@ IMPORTANT: Return ONLY valid JSON. Absolutely zero markdown framing outside the 
         } catch (candidateErr: any) {
           lastModelError = candidateErr;
           const errMsg = candidateErr?.message || '';
-          console.info(`[DOCKET] Candidate model ${modelName} returned transient status (${errMsg.slice(0, 80)}). Cascading to next candidate...`);
+          console.info(`[DOCKET] Candidate model ${modelName} notice: ${errMsg.slice(0, 100)}. Cascading if available...`);
         }
       }
 

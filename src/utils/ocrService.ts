@@ -195,12 +195,12 @@ export const parseSummonTextStrict = (rawText: string): ExtractedSummonData => {
   };
 };
 
-// Helper to optimize large mobile images (downscaling 10-25MB photos to fast, sharp 2048px scans)
+// Helper to optimize large mobile images (downscaling 10-25MB photos to fast, sharp, lightweight scans < 1.5MB for Vercel serverless)
 export const optimizeImageForOcr = async (
   dataUrl: string,
   mimeType: string,
-  maxDimension = 1500,
-  quality = 0.75
+  maxDimension = 1600,
+  quality = 0.82
 ): Promise<{ dataUrl: string; mimeType: string }> => {
   if (mimeType.includes('pdf') || !dataUrl.startsWith('data:image')) {
     return { dataUrl, mimeType };
@@ -212,11 +212,7 @@ export const optimizeImageForOcr = async (
       let width = img.width;
       let height = img.height;
 
-      if (width <= maxDimension && height <= maxDimension) {
-        resolve({ dataUrl, mimeType });
-        return;
-      }
-
+      // Calculate proportional dimensions capped at maxDimension
       if (width > height) {
         if (width > maxDimension) {
           height = Math.round((height * maxDimension) / width);
@@ -230,16 +226,50 @@ export const optimizeImageForOcr = async (
       }
 
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = Math.max(1, width);
+      canvas.height = Math.max(1, height);
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         resolve({ dataUrl, mimeType });
         return;
       }
 
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(img, 0, 0, width, height);
-      const optimizedUrl = canvas.toDataURL('image/jpeg', quality);
+
+      let optimizedUrl = canvas.toDataURL('image/jpeg', quality);
+
+      // Guardrail for Vercel serverless 4.5MB limit:
+      // If base64 payload is still > 1.8MB (~1.35MB binary), downscale once more to 1280px at 0.72 quality
+      if (optimizedUrl.length > 1800000) {
+        const reducedMax = 1280;
+        let rWidth = width;
+        let rHeight = height;
+        if (rWidth > rHeight) {
+          if (rWidth > reducedMax) {
+            rHeight = Math.round((rHeight * reducedMax) / rWidth);
+            rWidth = reducedMax;
+          }
+        } else {
+          if (rHeight > reducedMax) {
+            rWidth = Math.round((rWidth * reducedMax) / rHeight);
+            rHeight = reducedMax;
+          }
+        }
+
+        const reducedCanvas = document.createElement('canvas');
+        reducedCanvas.width = Math.max(1, rWidth);
+        reducedCanvas.height = Math.max(1, rHeight);
+        const rCtx = reducedCanvas.getContext('2d');
+        if (rCtx) {
+          rCtx.imageSmoothingEnabled = true;
+          rCtx.imageSmoothingQuality = 'medium';
+          rCtx.drawImage(img, 0, 0, rWidth, rHeight);
+          optimizedUrl = reducedCanvas.toDataURL('image/jpeg', 0.72);
+        }
+      }
+
       resolve({ dataUrl: optimizedUrl, mimeType: 'image/jpeg' });
     };
 
@@ -546,13 +576,20 @@ export const scanSummonDocument = async (
       const errJson = await res.json().catch(() => ({}));
       console.error(`[DOCKET] Server error HTTP ${res.status}:`, errJson);
 
-      const errorMsg =
-        errJson.error ||
-        (res.status === 413
-          ? 'Image file is too large for transmission. Please retake or crop tighter.'
-          : res.status === 503
-          ? 'Gemini AI service is temporarily unavailable. Please retry shortly.'
-          : 'Unable to read this document.');
+      let errorMsg = errJson.error;
+      if (!errorMsg) {
+        if (res.status === 413) {
+          errorMsg = 'Image file is too large for transmission (>4.5MB). Please retake or crop tighter.';
+        } else if (res.status === 503) {
+          errorMsg = errJson.code === 'API_KEY_NOT_CONFIGURED'
+            ? 'Gemini API key is not configured on your Vercel deployment. Please add GEMINI_API_KEY in Vercel Project Settings > Environment Variables.'
+            : 'Gemini AI service is temporarily unavailable. Please retry shortly.';
+        } else if (res.status === 401 || res.status === 403) {
+          errorMsg = 'Gemini API authentication failed. Please verify your GEMINI_API_KEY in Vercel environment variables.';
+        } else {
+          errorMsg = 'Unable to read this document. Please ensure the summon image is clear and well-lit.';
+        }
+      }
 
       return {
         sessionId: errJson.sessionId || sessionId,

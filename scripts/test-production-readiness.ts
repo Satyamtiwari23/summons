@@ -273,6 +273,16 @@ async function runProductionReadinessTests() {
       await db.collection('notifications').deleteOne({ _id: testNotifId, userId: testUserId });
       const afterDelNotif = await db.collection('notifications').findOne({ _id: testNotifId });
       assert('MongoDB notification cleaned up successfully', afterDelNotif === null);
+
+      // Test 10: OCR Health & Endpoint Availability
+      console.log('\n--- 10. OCR & Health Endpoints Route Verification ---');
+      const stack = (app as any).router?.stack || (app as any)._router?.stack || [];
+      const hasOcrRoute = stack.some((layer: any) => layer.route?.path === '/api/ocr');
+      const hasOcrHealthRoute = stack.some((layer: any) => layer.route?.path === '/api/ocr/health');
+      const hasHealthRoute = stack.some((layer: any) => layer.route?.path === '/api/health');
+      assert('Express registers /api/ocr endpoint', hasOcrRoute);
+      assert('Express registers /api/ocr/health endpoint', hasOcrHealthRoute);
+      assert('Express registers /api/health endpoint', hasHealthRoute);
     }
   } catch (err: any) {
     assert('Express app and DB initialize without crash', false, err.message);
