@@ -1,8 +1,8 @@
-import { parseJudicialQR } from '../server/services/judicialQrParser';
-import { validateQrLookupRequest } from '../server/validators/caseValidators';
-import { sanitizeFileName, getImageFormatInfo } from '../src/utils/documentDownloadService';
-import { parseSummonTextStrict, normalizeJudicialDate, validateDocketData } from '../src/utils/ocrService';
-import { getApp } from '../server/app';
+import { parseJudicialQR } from '../server/services/judicialQrParser.ts';
+import { validateQrLookupRequest } from '../server/validators/caseValidators.ts';
+import { sanitizeFileName, getImageFormatInfo } from '../src/utils/documentDownloadService.ts';
+import { parseSummonTextStrict, normalizeJudicialDate, validateDocketData } from '../src/utils/ocrService.ts';
+import { getApp } from '../server/app.ts';
 import fs from 'fs';
 import path from 'path';
 
@@ -54,8 +54,10 @@ async function runProductionReadinessTests() {
     assert('vercel.json has security headers', Array.isArray(vercelConfig.headers) && vercelConfig.headers.length > 0);
   }
 
-  const apiIndexPath = path.join(process.cwd(), 'api', 'index.ts');
-  assert('api/index.ts serverless function entrypoint exists', fs.existsSync(apiIndexPath));
+  const apiIndexPath = fs.existsSync(path.join(process.cwd(), 'api', 'index.js'))
+    ? path.join(process.cwd(), 'api', 'index.js')
+    : path.join(process.cwd(), 'api', 'index.ts');
+  assert('Vercel serverless function entrypoint (api/index.js) exists', fs.existsSync(apiIndexPath));
 
   // 3. QR Decoding & CNR Extraction Unit Tests
   console.log('\n--- 3. Judicial QR & CNR Parser Unit Tests ---');

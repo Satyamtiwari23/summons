@@ -1,14 +1,10 @@
 {
   "version": 2,
-  "buildCommand": "vite build",
+  "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
   "functions": {
-    "api/index.ts": {
-      "maxDuration": 30,
-      "memory": 1024
-    },
-    "api/[...slug].ts": {
+    "api/index.js": {
       "maxDuration": 30,
       "memory": 1024
     }

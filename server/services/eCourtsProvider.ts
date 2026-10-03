@@ -1,4 +1,4 @@
-import { NormalizedCaseData, normalizeCaseData } from './caseNormalizer';
+import { NormalizedCaseData, normalizeCaseData } from './caseNormalizer.ts';
 
 export type CaseLookupStatus =
   | 'FOUND'

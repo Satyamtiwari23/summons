@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { validateQrLookupRequest } from '../validators/caseValidators';
-import { caseLookupService } from '../services/caseLookupService';
+import { validateQrLookupRequest } from '../validators/caseValidators.ts';
+import { caseLookupService } from '../services/caseLookupService.ts';
 
 export function createCaseRoutes(getDb?: () => any): Router {
   const router = Router();

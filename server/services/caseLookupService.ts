@@ -1,5 +1,5 @@
-import { parseJudicialQR, ParsedJudicialQr } from './judicialQrParser';
-import { CaseLookupProvider, ECourtsProvider, CaseLookupResult } from './eCourtsProvider';
+import { parseJudicialQR, ParsedJudicialQr } from './judicialQrParser.ts';
+import { CaseLookupProvider, ECourtsProvider, CaseLookupResult } from './eCourtsProvider.ts';
 import crypto from 'crypto';
 
 export class CaseLookupService {

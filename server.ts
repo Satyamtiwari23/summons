@@ -1,4 +1,4 @@
-import { getApp, startServer } from './server/app';
+import { getApp, startServer } from './server/app.ts';
 
 export { getApp, startServer };
 

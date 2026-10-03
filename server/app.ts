@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { MongoClient, ServerApiVersion, ObjectId } from 'mongodb';
 import { initializeApp, getApps } from 'firebase-admin/app';
@@ -12,8 +11,8 @@ import webpush from 'web-push';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
-import { createInMemoryDatabase } from '../mockDb';
-import { createCaseRoutes } from './routes/caseRoutes';
+import { createInMemoryDatabase } from '../mockDb.ts';
+import { createCaseRoutes } from './routes/caseRoutes.ts';
 
 // Load environment variables from .env and .env.local if present
 for (const envFile of ['.env', '.env.local']) {
@@ -1891,6 +1890,7 @@ export async function startServer() {
 
   // Serve Frontend Assets: Vite middleware in Development, static dist/ in Production
   if (!isProduction) {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
         middlewareMode: true,

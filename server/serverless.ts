@@ -1,4 +1,4 @@
-import { getApp } from '../server/app';
+import { getApp } from './app.ts';
 
 let cachedApp: any = null;
 
@@ -8,7 +8,7 @@ export default async function handler(req: any, res: any) {
     cachedApp = result.app;
   }
 
-  // Restore true requested URL from Vercel edge rewrite or slug parameter
+  // Restore true requested URL from Vercel edge rewrite metadata
   const forwardedUri =
     req.headers['x-forwarded-uri'] ||
     req.headers['x-matched-path'] ||
