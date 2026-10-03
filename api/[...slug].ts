@@ -8,7 +8,7 @@ export default async function handler(req: any, res: any) {
     cachedApp = result.app;
   }
 
-  // Restore true requested URL from Vercel edge rewrite metadata
+  // Restore true requested URL from Vercel edge rewrite or slug parameter
   const forwardedUri =
     req.headers['x-forwarded-uri'] ||
     req.headers['x-matched-path'] ||
@@ -37,4 +37,3 @@ export default async function handler(req: any, res: any) {
 
   return cachedApp(req, res);
 }
-

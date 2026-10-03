@@ -573,12 +573,25 @@ export const scanSummonDocument = async (
         data: extractedData,
       };
     } else {
-      const errJson = await res.json().catch(() => ({}));
+      const contentType = res.headers.get('content-type') || '';
+      const isHtmlResponse = contentType.includes('text/html');
+
+      let errJson: any = {};
+      if (!isHtmlResponse) {
+        errJson = await res.json().catch(() => ({}));
+      } else {
+        console.warn(`[DOCKET] Server responded with HTML (status=${res.status}) rather than JSON.`);
+      }
+
       console.error(`[DOCKET] Server error HTTP ${res.status}:`, errJson);
 
       let errorMsg = errJson.error;
       if (!errorMsg) {
-        if (res.status === 413) {
+        if (res.status === 404) {
+          errorMsg = isHtmlResponse
+            ? 'OCR backend route was not reached (HTTP 404 HTML). Please verify your latest Vercel deployment has completed.'
+            : 'OCR backend endpoint was not found (HTTP 404).';
+        } else if (res.status === 413) {
           errorMsg = 'Image file is too large for transmission (>4.5MB). Please retake or crop tighter.';
         } else if (res.status === 503) {
           errorMsg = errJson.code === 'API_KEY_NOT_CONFIGURED'
@@ -586,8 +599,12 @@ export const scanSummonDocument = async (
             : 'Gemini AI service is temporarily unavailable. Please retry shortly.';
         } else if (res.status === 401 || res.status === 403) {
           errorMsg = 'Gemini API authentication failed. Please verify your GEMINI_API_KEY in Vercel environment variables.';
+        } else if (res.status === 500) {
+          errorMsg = 'Internal server error while processing document OCR. Please verify server logs or retry.';
         } else {
-          errorMsg = 'Unable to read this document. Please ensure the summon image is clear and well-lit.';
+          errorMsg = isHtmlResponse
+            ? `Server returned an unexpected HTTP ${res.status} response. Please redeploy latest Vercel changes.`
+            : 'Unable to read this document. Please ensure the summon image is clear and well-lit.';
         }
       }
 

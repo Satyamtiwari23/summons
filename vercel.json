@@ -7,6 +7,10 @@
     "api/index.ts": {
       "maxDuration": 30,
       "memory": 1024
+    },
+    "api/[...slug].ts": {
+      "maxDuration": 30,
+      "memory": 1024
     }
   },
   "headers": [
@@ -35,7 +39,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index"
+      "destination": "/api/index?__path=$1"
     },
     {
       "source": "/(.*)",

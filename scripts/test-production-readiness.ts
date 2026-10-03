@@ -277,12 +277,76 @@ async function runProductionReadinessTests() {
       // Test 10: OCR Health & Endpoint Availability
       console.log('\n--- 10. OCR & Health Endpoints Route Verification ---');
       const stack = (app as any).router?.stack || (app as any)._router?.stack || [];
-      const hasOcrRoute = stack.some((layer: any) => layer.route?.path === '/api/ocr');
-      const hasOcrHealthRoute = stack.some((layer: any) => layer.route?.path === '/api/ocr/health');
-      const hasHealthRoute = stack.some((layer: any) => layer.route?.path === '/api/health');
+      const matchRoute = (p: string) =>
+        stack.some((layer: any) =>
+          Array.isArray(layer.route?.path)
+            ? layer.route.path.includes(p)
+            : layer.route?.path === p
+        );
+      const hasOcrRoute = matchRoute('/api/ocr');
+      const hasOcrHealthRoute = matchRoute('/api/ocr/health');
+      const hasHealthRoute = matchRoute('/api/health');
       assert('Express registers /api/ocr endpoint', hasOcrRoute);
       assert('Express registers /api/ocr/health endpoint', hasOcrHealthRoute);
       assert('Express registers /api/health endpoint', hasHealthRoute);
+
+      // Test 11: Real HTTP In-Flight API Verification
+      console.log('\n--- 11. Real HTTP API In-Flight Verification (GET /, GET /api, OCR) ---');
+      const server = await new Promise<any>((resolve) => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s));
+      });
+      const addr: any = server.address();
+      const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+      try {
+        // Test GET /
+        const rootRes = await fetch(`${baseUrl}/`, {
+          headers: { Accept: 'application/json' },
+        });
+        assert('GET / returns HTTP 200 OK', rootRes.status === 200);
+        const rootJson: any = await rootRes.json();
+        assert('GET / returns valid JSON with service: judicial-ocr', rootJson.service === 'judicial-ocr');
+        assert('GET / reports status: online', rootJson.status === 'online');
+        assert('GET / lists primaryModel: gemini-3.8-flash', rootJson.primaryModel === 'gemini-3.8-flash');
+        assert('GET / provides endpoints dictionary including /api/ocr', !!rootJson.endpoints?.ocr);
+
+        // Test GET /api
+        const apiRes = await fetch(`${baseUrl}/api`);
+        assert('GET /api returns HTTP 200 OK', apiRes.status === 200);
+        const apiJson: any = await apiRes.json();
+        assert('GET /api returns service descriptor', apiJson.service === 'judicial-ocr');
+
+        // Test GET /api/ocr/health
+        const ocrHealthRes = await fetch(`${baseUrl}/api/ocr/health`);
+        assert('GET /api/ocr/health returns HTTP 200 OK', ocrHealthRes.status === 200);
+        const ocrHealthJson: any = await ocrHealthRes.json();
+        assert('GET /api/ocr/health reports status: ok', ocrHealthJson.status === 'ok');
+        assert('GET /api/ocr/health reports primaryModel: gemini-3.8-flash', ocrHealthJson.primaryModel === 'gemini-3.8-flash');
+
+        // Test POST /api/ocr missing payload validation
+        const ocrMissingRes = await fetch(`${baseUrl}/api/ocr`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        assert('POST /api/ocr with empty payload returns HTTP 400', ocrMissingRes.status === 400);
+        const ocrMissingJson: any = await ocrMissingRes.json();
+        assert('POST /api/ocr returns MISSING_PAYLOAD code', ocrMissingJson.code === 'MISSING_PAYLOAD');
+
+        // Test POST /api/ocr with minimal image payload (checks API pipeline execution)
+        const tinyPngBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+        const ocrPostRes = await fetch(`${baseUrl}/api/ocr`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: tinyPngBase64, mimeType: 'image/png', sessionId: 'test_session_audit' }),
+        });
+        assert('POST /api/ocr responds with JSON content-type', ocrPostRes.headers.get('content-type')?.includes('application/json') || false);
+        const ocrPostJson: any = await ocrPostRes.json();
+        assert('POST /api/ocr preserves sessionId in response', ocrPostJson.sessionId === 'test_session_audit');
+        assert('POST /api/ocr returns valid response structure (no HTML crashes)', typeof ocrPostJson === 'object' && !Array.isArray(ocrPostJson));
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
     }
   } catch (err: any) {
     assert('Express app and DB initialize without crash', false, err.message);

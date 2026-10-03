@@ -243,9 +243,78 @@ export async function getApp() {
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
   app.use(cookieParser());
 
+  // Vercel Serverless Path Normalization Middleware:
+  // Restores original request paths if rewritten by Vercel edge gateway
+  app.use((req: any, _res: any, next: any) => {
+    const forwardedUri =
+      req.headers['x-forwarded-uri'] ||
+      req.headers['x-matched-path'] ||
+      req.headers['x-original-uri'];
+
+    if (forwardedUri && typeof forwardedUri === 'string' && (req.url === '/api/index' || req.url === '/api' || req.url.startsWith('/api/index?'))) {
+      req.url = forwardedUri;
+    }
+
+    if (req.url && req.url.includes('__path=')) {
+      const match = req.url.match(/[?&]__path=([^&]+)/);
+      if (match && match[1]) {
+        req.url = `/api/${decodeURIComponent(match[1])}`;
+      }
+    }
+
+    next();
+  });
+
+  // Root Service Info Helper for health probes and API discovery
+  const getRootServiceInfo = () => {
+    const key = getGeminiApiKey();
+    const isConfigured = Boolean(key && key.trim().length > 6);
+    return {
+      name: 'SummonsMitra API',
+      service: 'judicial-ocr',
+      status: 'online',
+      version: '1.0.0',
+      configured: isConfigured,
+      primaryModel: 'gemini-3.8-flash',
+      database: db ? (db.isInMemory ? 'in-memory' : 'mongodb') : 'disconnected',
+      endpoints: {
+        root: '/',
+        health: '/api/health',
+        ocr: '/api/ocr',
+        ocrHealth: '/api/ocr/health',
+        summons: '/api/summons',
+        cases: '/api/cases',
+        witnesses: '/api/witnesses',
+        reviews: '/api/reviews',
+        notifications: '/api/notifications',
+        auth: '/api/auth/me',
+      },
+      timestamp: new Date().toISOString(),
+    };
+  };
+
+  // Root & /api Health / Discovery Endpoints
+  app.get(['/api', '/api/'], (_req, res) => {
+    res.status(200).json(getRootServiceInfo());
+  });
+
+  app.get('/', (req, res, next) => {
+    const acceptsHtml = req.accepts('html');
+    const acceptsJson = req.accepts('json');
+    const isDocumentFetch = req.headers['sec-fetch-dest'] === 'document';
+
+    // If API client, curl, test probe, or running in serverless environment
+    if ((acceptsJson && !acceptsHtml) || (!isDocumentFetch && !acceptsHtml) || process.env.VERCEL === '1') {
+      return res.status(200).json(getRootServiceInfo());
+    }
+
+    // In local dev server, let Vite serve index.html
+    next();
+  });
+
   // 1. General Health Check
   
-  app.get('/api/health', (_req, res) => {
+  app.get(['/api/health', '/health'], (_req, res) => {
     res.status(200).json({
       status: 'ok',
       service: 'summon-mitra-server',
@@ -1782,6 +1851,16 @@ IMPORTANT: Return ONLY valid JSON. Absolutely zero markdown framing outside the 
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // Safe JSON 404 handler for API routes: prevents returning HTML when API endpoints are misconfigured
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      error: `API route '${req.method} ${req.originalUrl || req.url}' was not found.`,
+      code: 'ROUTE_NOT_FOUND',
+      method: req.method,
+      url: req.originalUrl || req.url,
+    });
   });
 
   // Schedule periodic background hearing check every 2 minutes (when server is long-running)
