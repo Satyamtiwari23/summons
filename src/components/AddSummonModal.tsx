@@ -690,12 +690,10 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
 
   // Handler when DocumentCameraScanner completes (Camera/Upload -> Review -> Crop -> AI OCR)
   const handleScannerComplete = (result: ScanResultData) => {
-    // Strictly verify session ownership before modifying any form or preview state
-    if (result.scanSessionId && result.scanSessionId !== currentScanSessionIdRef.current) {
-      console.info(
-        `[AddSummonModal] Ignored stale scan completion for session (${result.scanSessionId}) vs active (${currentScanSessionIdRef.current})`
-      );
-      return;
+    // Synchronize session ownership from the active scanner instance
+    if (result.scanSessionId) {
+      currentScanSessionIdRef.current = result.scanSessionId;
+      setCurrentScanSessionId(result.scanSessionId);
     }
 
     setIsFullScreenScannerOpen(false);
@@ -708,6 +706,22 @@ export const AddSummonModal: React.FC<AddSummonModalProps> = ({
     setAttachmentPreview(result.croppedDataUrl);
     setOriginalAttachmentPreview(result.originalDataUrl);
     setViewingOriginalDoc(false);
+
+    // If user explicitly chose "Keep Image & Enter Details Manually", open manual form immediately with image preserved
+    if (result.isManualEntry) {
+      setIsUnreadable(false);
+      setOcrSuccess(false);
+      setDetectedFields(new Set());
+      setFieldMeta({});
+      setOcrMessage('Scanned document attached. Please enter the summon particulars manually.');
+      showToast(
+        'Scanned document attached. Please fill in summon particulars below.',
+        'info',
+        'Manual Entry Active'
+      );
+      setCurrentStep('review');
+      return;
+    }
 
     // Check if document was unreadable or failed completely
     if (result.ocrResult.isUnreadable || !result.ocrResult.success) {

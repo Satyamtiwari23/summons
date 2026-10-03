@@ -34,6 +34,7 @@ export interface ScanResultData {
   croppedFile: File;
   ocrResult: OcrResult;
   fileName: string;
+  isManualEntry?: boolean;
 }
 
 interface DocumentCameraScannerProps {
@@ -737,6 +738,7 @@ export const DocumentCameraScanner: React.FC<DocumentCameraScannerProps> = ({
       croppedFile: targetFile,
       ocrResult: fallbackResult,
       fileName: workingFileName,
+      isManualEntry: true,
     });
   };
 

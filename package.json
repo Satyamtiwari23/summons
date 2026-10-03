@@ -22,7 +22,7 @@
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "firebase": "^12.18.0",
-    "firebase-admin": "^14.4.0",
+    "firebase-admin": "^13.10.0",
     "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.2.1",
     "jsqr": "^1.4.0",
@@ -33,6 +33,9 @@
     "react-dom": "^18.3.1",
     "react-image-crop": "^11.1.2",
     "web-push": "^3.6.7"
+  },
+  "overrides": {
+    "jwks-rsa": "^3.1.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.2",
